@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Rubika Bridge
  * Description: Lightweight WooCommerce to Rubika publisher with queue, scheduling, and per-product controls.
- * Version: 1.1.0
+ * Version: 1.0.0
  * Author: Codex
  * Requires Plugins: woocommerce
  */
