@@ -37,6 +37,8 @@ if (!class_exists('WCRB_Plugin')) {
             add_action('admin_post_wcrb_clear_database', array($this, 'handle_clear_database'));
             add_action('admin_post_wcrb_send_test_message', array($this, 'handle_send_test_message'));
             add_action('admin_post_wcrb_reset_sync_records', array($this, 'handle_reset_sync_records'));
+            add_action('admin_post_wcrb_send_now_single', array($this, 'handle_send_now_single'));
+            add_action('transition_post_status', array($this, 'enqueue_newly_published_product'), 10, 3);
 
             add_action('admin_bar_menu', array($this, 'admin_bar_publish_button'), 100);
             add_action('admin_notices', array($this, 'admin_notice'));
@@ -129,6 +131,7 @@ if (!class_exists('WCRB_Plugin')) {
                 'send_window_end' => '23:59',
                 'disable_notification' => 0,
                 'enable_logs' => 1,
+                'enable_plugin' => 1,
             );
         }
 
@@ -251,6 +254,7 @@ if (!class_exists('WCRB_Plugin')) {
             $sanitized['send_window_end'] = preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $input['send_window_end'] ?? '') ? $input['send_window_end'] : '23:59';
             $sanitized['disable_notification'] = !empty($input['disable_notification']) ? 1 : 0;
             $sanitized['enable_logs'] = !empty($input['enable_logs']) ? 1 : 0;
+            $sanitized['enable_plugin'] = !empty($input['enable_plugin']) ? 1 : 0;
             return $sanitized;
         }
 
@@ -274,6 +278,10 @@ if (!class_exists('WCRB_Plugin')) {
                 <form method="post" action="options.php">
                     <?php settings_fields('wcrb_settings_group'); ?>
                     <table class="form-table" role="presentation">
+                        <tr>
+                            <th scope="row"><label for="wcrb_enable_plugin"><?php esc_html_e('Enable Rubika publishing', 'wcrb'); ?></label></th>
+                            <td><label><input type="checkbox" id="wcrb_enable_plugin" name="<?php echo esc_attr(self::OPTION_KEY); ?>[enable_plugin]" value="1" <?php checked((int) $settings['enable_plugin'], 1); ?>> <?php esc_html_e('Enable plugin send/queue actions', 'wcrb'); ?></label></td>
+                        </tr>
                         <tr>
                             <th scope="row"><label for="wcrb_bot_token"><?php esc_html_e('Bot Token', 'wcrb'); ?></label></th>
                             <td><input type="text" id="wcrb_bot_token" name="<?php echo esc_attr(self::OPTION_KEY); ?>[bot_token]" class="regular-text" value="<?php echo esc_attr($settings['bot_token']); ?>"></td>
@@ -454,6 +462,11 @@ if (!class_exists('WCRB_Plugin')) {
             }
 
             $product_id = isset($_GET['product_id']) ? absint($_GET['product_id']) : 0;
+            if (!$this->is_plugin_enabled()) {
+                wp_safe_redirect(add_query_arg(array('wcrb_notice' => 'plugin_disabled'), wp_get_referer() ?: admin_url()));
+                exit;
+            }
+
             if ($product_id) {
                 $this->enqueue_product($product_id);
                 $this->add_log('info', 'Single product queued.', array('product_id' => $product_id));
@@ -563,9 +576,63 @@ if (!class_exists('WCRB_Plugin')) {
             exit;
         }
 
+        public function handle_send_now_single() {
+            if (!current_user_can('edit_products') || !check_admin_referer('wcrb_send_now_single')) {
+                wp_die(esc_html__('Not allowed.', 'wcrb'));
+            }
+
+            if (!$this->is_plugin_enabled()) {
+                wp_safe_redirect(add_query_arg(array('wcrb_notice' => 'plugin_disabled'), wp_get_referer() ?: admin_url()));
+                exit;
+            }
+
+            $product_id = isset($_GET['product_id']) ? absint($_GET['product_id']) : 0;
+            if ($product_id) {
+                $result = $this->send_product_to_rubika($product_id);
+                if ($result['success']) {
+                    update_post_meta($product_id, '_wcrb_last_sent_at', current_time('mysql'));
+                    $this->add_log('info', 'Product sent directly from social menu.', array('product_id' => $product_id));
+                    wp_safe_redirect(add_query_arg(array('wcrb_notice' => 'direct_ok'), wp_get_referer() ?: admin_url()));
+                    exit;
+                }
+
+                $this->add_log('error', 'Direct send failed.', array('product_id' => $product_id, 'message' => $result['message']));
+            }
+
+            wp_safe_redirect(add_query_arg(array('wcrb_notice' => 'direct_fail'), wp_get_referer() ?: admin_url()));
+            exit;
+        }
+
+        public function enqueue_newly_published_product($new_status, $old_status, $post) {
+            if (!$this->is_plugin_enabled()) {
+                return;
+            }
+
+            if (!($post instanceof WP_Post) || $post->post_type !== 'product') {
+                return;
+            }
+
+            if ($old_status === 'publish' || $new_status !== 'publish') {
+                return;
+            }
+
+            if ($this->enqueue_product((int) $post->ID)) {
+                $this->add_log('info', 'Newly published product auto-queued.', array('product_id' => (int) $post->ID));
+            }
+        }
+
         private function enqueue_product($product_id) {
+            if (!$this->is_plugin_enabled()) {
+                return false;
+            }
+
             $post = get_post($product_id);
             if (!$post || $post->post_type !== 'product' || $post->post_status !== 'publish') {
+                return false;
+            }
+
+            $product = wc_get_product($product_id);
+            if (!$product || !$product->is_in_stock()) {
                 return false;
             }
 
@@ -597,6 +664,10 @@ if (!class_exists('WCRB_Plugin')) {
         }
 
         public function process_queue($force = false) {
+            if (!$this->is_plugin_enabled()) {
+                return;
+            }
+
             if (!$force && !$this->is_in_send_window()) {
                 $this->add_log('info', 'Queue paused: outside send window.');
                 return;
@@ -668,8 +739,8 @@ if (!class_exists('WCRB_Plugin')) {
         private function send_product_to_rubika($product_id) {
             $settings = $this->get_settings();
             $product = wc_get_product($product_id);
-            if (!$product || $product->get_status() !== 'publish') {
-                return array('success' => false, 'message' => 'Invalid or unpublished product');
+            if (!$product || $product->get_status() !== 'publish' || !$product->is_in_stock()) {
+                return array('success' => false, 'message' => 'Invalid, unpublished, or out-of-stock product');
             }
 
             $text = $this->render_template($product, $settings);
@@ -1094,10 +1165,10 @@ if (!class_exists('WCRB_Plugin')) {
 
             $url = wp_nonce_url(
                 add_query_arg(
-                    array('action' => 'wcrb_enqueue_single', 'product_id' => $product_id),
+                    array('action' => 'wcrb_send_now_single', 'product_id' => $product_id),
                     admin_url('admin-post.php')
                 ),
-                'wcrb_enqueue_single'
+                'wcrb_send_now_single'
             );
 
             $wp_admin_bar->add_node(array(
@@ -1156,6 +1227,18 @@ if (!class_exists('WCRB_Plugin')) {
             if ($_GET['wcrb_notice'] === 'reset_sync') {
                 echo '<div class="notice notice-warning is-dismissible"><p>' . esc_html__('Synced/unsynced product records were reset.', 'wcrb') . '</p></div>';
             }
+
+            if ($_GET['wcrb_notice'] === 'direct_ok') {
+                echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__('Product sent directly to Rubika.', 'wcrb') . '</p></div>';
+            }
+
+            if ($_GET['wcrb_notice'] === 'direct_fail') {
+                echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__('Direct send failed. Check logs.', 'wcrb') . '</p></div>';
+            }
+
+            if ($_GET['wcrb_notice'] === 'plugin_disabled') {
+                echo '<div class="notice notice-warning is-dismissible"><p>' . esc_html__('Rubika publishing is disabled from plugin settings.', 'wcrb') . '</p></div>';
+            }
         }
 
         private function add_log($level, $message, $context = array()) {
@@ -1192,6 +1275,11 @@ if (!class_exists('WCRB_Plugin')) {
         private function is_logging_enabled() {
             $settings = $this->get_settings();
             return !empty($settings['enable_logs']);
+        }
+
+        private function is_plugin_enabled() {
+            $settings = $this->get_settings();
+            return !empty($settings['enable_plugin']);
         }
 
         private function get_logs() {
