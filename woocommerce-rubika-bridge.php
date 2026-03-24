@@ -539,10 +539,18 @@ if (!class_exists('WCRB_Plugin')) {
             $text = $this->render_template($product, $settings);
             $images = $this->collect_images($product, (int) $settings['image_count'], $settings['excluded_images']);
 
+            $image_send_failed = false;
+            $message_sent = false;
             foreach ($images as $index => $attachment_id) {
                 $upload = $this->upload_image_to_rubika($attachment_id, $settings['bot_token']);
                 if (!$upload['success']) {
-                    return $upload;
+                    $image_send_failed = true;
+                    $this->add_log('warning', 'Image upload failed, fallback to text-only message.', array(
+                        'product_id' => $product_id,
+                        'attachment_id' => $attachment_id,
+                        'reason' => $upload['message'],
+                    ));
+                    break;
                 }
 
                 $file_payload = array(
@@ -557,11 +565,21 @@ if (!class_exists('WCRB_Plugin')) {
                     return $value !== null;
                 }));
                 if (!$result['success']) {
-                    return $result;
+                    $image_send_failed = true;
+                    $this->add_log('warning', 'Image send failed, fallback to text-only message.', array(
+                        'product_id' => $product_id,
+                        'attachment_id' => $attachment_id,
+                        'reason' => $result['message'],
+                    ));
+                    break;
+                }
+
+                if ($index === 0) {
+                    $message_sent = true;
                 }
             }
 
-            if (empty($images)) {
+            if (empty($images) || ($image_send_failed && !$message_sent)) {
                 $payload = array(
                     'chat_id' => $settings['channel'],
                     'text' => $text,
@@ -634,13 +652,23 @@ if (!class_exists('WCRB_Plugin')) {
         }
 
         private function upload_image_to_rubika($attachment_id, $token) {
-            $path = get_attached_file($attachment_id);
-            if (!$path || !file_exists($path)) {
+            $original_path = get_attached_file($attachment_id);
+            if (!$original_path || !file_exists($original_path)) {
                 return array('success' => false, 'message' => 'Image file missing');
+            }
+
+            $prepared = $this->prepare_image_for_rubika_upload($original_path);
+            $path = $prepared['path'];
+            $cleanup_temp_file = !empty($prepared['temporary']);
+            if ($cleanup_temp_file) {
+                $this->add_log('info', 'Converted WEBP to JPG for Rubika upload.', array('source' => basename($original_path)));
             }
 
             $request = $this->rubika_api_request($token, 'requestSendFile', array('type' => 'Image'));
             if (!$request['success']) {
+                if ($cleanup_temp_file && file_exists($path)) {
+                    @unlink($path);
+                }
                 return $request;
             }
 
@@ -652,6 +680,9 @@ if (!class_exists('WCRB_Plugin')) {
             }
 
             if (empty($upload_url)) {
+                if ($cleanup_temp_file && file_exists($path)) {
+                    @unlink($path);
+                }
                 return array('success' => false, 'message' => 'Could not get upload URL');
             }
 
@@ -664,6 +695,9 @@ if (!class_exists('WCRB_Plugin')) {
             ));
 
             if (is_wp_error($response)) {
+                if ($cleanup_temp_file && file_exists($path)) {
+                    @unlink($path);
+                }
                 return array('success' => false, 'message' => $response->get_error_message());
             }
 
@@ -693,10 +727,48 @@ if (!class_exists('WCRB_Plugin')) {
 
             if (empty($file_id)) {
                 $body_for_log = is_string($raw_upload_body) ? mb_substr($raw_upload_body, 0, 400) : '';
+                if ($cleanup_temp_file && file_exists($path)) {
+                    @unlink($path);
+                }
                 return array('success' => false, 'message' => 'No file_id in upload response: ' . $body_for_log);
             }
 
+            if ($cleanup_temp_file && file_exists($path)) {
+                @unlink($path);
+            }
+
             return array('success' => true, 'file_id' => $file_id);
+        }
+
+        private function prepare_image_for_rubika_upload($path) {
+            $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+            if ($extension !== 'webp') {
+                return array('path' => $path, 'temporary' => false);
+            }
+
+            if (!function_exists('imagecreatefromwebp') || !function_exists('imagejpeg')) {
+                return array('path' => $path, 'temporary' => false);
+            }
+
+            $image_resource = @imagecreatefromwebp($path);
+            if (!$image_resource) {
+                return array('path' => $path, 'temporary' => false);
+            }
+
+            $temp_jpg = wp_tempnam('wcrb-webp-convert');
+            if (!$temp_jpg) {
+                imagedestroy($image_resource);
+                return array('path' => $path, 'temporary' => false);
+            }
+
+            $result = @imagejpeg($image_resource, $temp_jpg, 90);
+            imagedestroy($image_resource);
+            if (!$result || !file_exists($temp_jpg)) {
+                @unlink($temp_jpg);
+                return array('path' => $path, 'temporary' => false);
+            }
+
+            return array('path' => $temp_jpg, 'temporary' => true);
         }
 
         private function extract_file_id_from_upload_response($json) {
