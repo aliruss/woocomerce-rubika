@@ -15,6 +15,7 @@ if (!class_exists('WCRB_Plugin')) {
     class WCRB_Plugin {
         const OPTION_KEY = 'wcrb_settings';
         const LAST_SENT_OPTION = 'wcrb_last_sent_at';
+        const LAST_RUNNER_PING_OPTION = 'wcrb_last_runner_ping';
         const LOG_OPTION = 'wcrb_logs';
         const CRON_HOOK = 'wcrb_process_queue_event';
         const TABLE_SUFFIX = 'wcrb_queue';
@@ -26,6 +27,7 @@ if (!class_exists('WCRB_Plugin')) {
             add_action('admin_menu', array($this, 'register_admin_menu'));
             add_action('admin_init', array($this, 'register_settings'));
             add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));
+            add_action('init', array($this, 'bootstrap_queue_runner'));
 
             add_action('admin_post_wcrb_enqueue_all', array($this, 'handle_enqueue_all'));
             add_action('admin_post_wcrb_enqueue_single', array($this, 'handle_enqueue_single'));
@@ -47,9 +49,7 @@ if (!class_exists('WCRB_Plugin')) {
             $current = get_option(self::OPTION_KEY, array());
             update_option(self::OPTION_KEY, wp_parse_args($current, $defaults));
 
-            if (!wp_next_scheduled(self::CRON_HOOK)) {
-                wp_schedule_event(time() + 60, 'wcrb_every_minute', self::CRON_HOOK);
-            }
+            $this->ensure_cron_event_scheduled();
 
             $this->add_log('info', 'Plugin activated.');
         }
@@ -67,6 +67,50 @@ if (!class_exists('WCRB_Plugin')) {
                 );
             }
             return $schedules;
+        }
+
+        public function bootstrap_queue_runner() {
+            $this->ensure_cron_event_scheduled();
+            $this->recover_stale_processing_items();
+            $this->maybe_process_queue_on_request();
+        }
+
+        private function ensure_cron_event_scheduled() {
+            if (!wp_next_scheduled(self::CRON_HOOK)) {
+                wp_schedule_event(time() + 60, 'wcrb_every_minute', self::CRON_HOOK);
+            }
+        }
+
+        private function recover_stale_processing_items() {
+            global $wpdb;
+            $table = $wpdb->prefix . self::TABLE_SUFFIX;
+
+            $wpdb->query(
+                "UPDATE {$table}
+                SET status = 'pending', scheduled_at = UTC_TIMESTAMP(), error_message = 'Recovered from stale processing state'
+                WHERE status = 'processing' AND created_at < (UTC_TIMESTAMP() - INTERVAL 15 MINUTE)"
+            );
+        }
+
+        private function maybe_process_queue_on_request() {
+            if (wp_doing_cron()) {
+                return;
+            }
+
+            $last_ping = (int) get_option(self::LAST_RUNNER_PING_OPTION, 0);
+            if ($last_ping > 0 && (time() - $last_ping) < 45) {
+                return;
+            }
+
+            global $wpdb;
+            $table = $wpdb->prefix . self::TABLE_SUFFIX;
+            $has_pending = (int) $wpdb->get_var("SELECT COUNT(1) FROM {$table} WHERE status = 'pending' AND scheduled_at <= UTC_TIMESTAMP()");
+            if ($has_pending < 1) {
+                return;
+            }
+
+            update_option(self::LAST_RUNNER_PING_OPTION, time(), false);
+            $this->process_queue(false);
         }
 
         private function default_settings() {
