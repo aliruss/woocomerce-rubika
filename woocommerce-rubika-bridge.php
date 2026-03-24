@@ -15,6 +15,7 @@ if (!class_exists('WCRB_Plugin')) {
     class WCRB_Plugin {
         const OPTION_KEY = 'wcrb_settings';
         const LAST_SENT_OPTION = 'wcrb_last_sent_at';
+        const LOG_OPTION = 'wcrb_logs';
         const CRON_HOOK = 'wcrb_process_queue_event';
         const TABLE_SUFFIX = 'wcrb_queue';
 
@@ -24,9 +25,13 @@ if (!class_exists('WCRB_Plugin')) {
 
             add_action('admin_menu', array($this, 'register_admin_menu'));
             add_action('admin_init', array($this, 'register_settings'));
+            add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));
 
             add_action('admin_post_wcrb_enqueue_all', array($this, 'handle_enqueue_all'));
             add_action('admin_post_wcrb_enqueue_single', array($this, 'handle_enqueue_single'));
+            add_action('admin_post_wcrb_clear_queue', array($this, 'handle_clear_queue'));
+            add_action('admin_post_wcrb_clear_logs', array($this, 'handle_clear_logs'));
+            add_action('admin_post_wcrb_run_queue', array($this, 'handle_run_queue_now'));
 
             add_action('admin_bar_menu', array($this, 'admin_bar_publish_button'), 100);
             add_action('admin_notices', array($this, 'admin_notice'));
@@ -45,10 +50,13 @@ if (!class_exists('WCRB_Plugin')) {
             if (!wp_next_scheduled(self::CRON_HOOK)) {
                 wp_schedule_event(time() + 60, 'wcrb_every_minute', self::CRON_HOOK);
             }
+
+            $this->add_log('info', 'Plugin activated.');
         }
 
         public function deactivate() {
             wp_clear_scheduled_hook(self::CRON_HOOK);
+            $this->add_log('info', 'Plugin deactivated.');
         }
 
         public function register_cron_schedules($schedules) {
@@ -66,12 +74,12 @@ if (!class_exists('WCRB_Plugin')) {
                 'bot_token' => 'JAIHJ0LIWGEOQKKWPBQFQKBEFSUAFZQIDYBFOTKDPUEQNSYTCAWPXPJEISIACNAP',
                 'channel' => '@behdashtik_site',
                 'website_url' => home_url('/'),
-                'template' => "🛍️ {title}\n\n{short_description}\n\n💰 {price}",
+                'template' => "🛍️ {title}\n\n{short_description}\n\n💰 {price}\n🔗 {url}",
                 'image_count' => 1,
                 'excluded_images' => '',
                 'interval_minutes' => 15,
-                'send_window_start' => '09:00',
-                'send_window_end' => '22:00',
+                'send_window_start' => '00:00',
+                'send_window_end' => '23:59',
                 'disable_notification' => 0,
             );
         }
@@ -118,6 +126,70 @@ if (!class_exists('WCRB_Plugin')) {
             register_setting('wcrb_settings_group', self::OPTION_KEY, array($this, 'sanitize_settings'));
         }
 
+        public function enqueue_admin_assets($hook) {
+            if ($hook !== 'woocommerce_page_wcrb-settings') {
+                return;
+            }
+
+            wp_enqueue_media();
+            wp_enqueue_script('jquery');
+            wp_add_inline_script(
+                'jquery',
+                "jQuery(function($){
+                    var frame;
+                    function renderPreviews(ids){
+                        var wrap = $('#wcrb-excluded-preview');
+                        wrap.empty();
+                        if(!ids.length){return;}
+                        ids.forEach(function(id){
+                            wp.media.attachment(id).fetch().then(function(){
+                                var att = wp.media.attachment(id).toJSON();
+                                var src = att.sizes && att.sizes.thumbnail ? att.sizes.thumbnail.url : (att.icon || '');
+                                if(src){wrap.append('<span style=\"display:inline-block;margin:0 8px 8px 0;text-align:center\"><img src=\"'+src+'\" style=\"width:60px;height:60px;object-fit:cover;display:block;border:1px solid #ddd\"><small>#'+id+'</small></span>');}
+                            });
+                        });
+                    }
+
+                    $('#wcrb_pick_images').on('click', function(e){
+                        e.preventDefault();
+                        var field = $('#wcrb_excluded_images');
+                        var selectedIds = field.val() ? field.val().split(',').map(function(v){ return parseInt(v,10); }).filter(Boolean) : [];
+
+                        if(frame){ frame.open(); return; }
+                        frame = wp.media({
+                            title: 'انتخاب تصاویر مستثنی',
+                            button: { text: 'انتخاب تصاویر' },
+                            library: { type: 'image' },
+                            multiple: true
+                        });
+                        frame.on('open', function(){
+                            var selection = frame.state().get('selection');
+                            selectedIds.forEach(function(id){
+                                var attachment = wp.media.attachment(id);
+                                attachment.fetch();
+                                selection.add(attachment ? [attachment] : []);
+                            });
+                        });
+                        frame.on('select', function(){
+                            var ids = frame.state().get('selection').map(function(att){ return att.id; });
+                            field.val(ids.join(','));
+                            renderPreviews(ids);
+                        });
+                        frame.open();
+                    });
+
+                    $('#wcrb_clear_images').on('click', function(e){
+                        e.preventDefault();
+                        $('#wcrb_excluded_images').val('');
+                        $('#wcrb-excluded-preview').empty();
+                    });
+
+                    var initial = $('#wcrb_excluded_images').val() ? $('#wcrb_excluded_images').val().split(',').map(function(v){ return parseInt(v,10); }).filter(Boolean) : [];
+                    renderPreviews(initial);
+                });"
+            );
+        }
+
         public function sanitize_settings($input) {
             $sanitized = $this->default_settings();
             $sanitized['bot_token'] = sanitize_text_field($input['bot_token'] ?? '');
@@ -125,10 +197,10 @@ if (!class_exists('WCRB_Plugin')) {
             $sanitized['website_url'] = esc_url_raw($input['website_url'] ?? home_url('/'));
             $sanitized['template'] = wp_kses_post($input['template'] ?? '');
             $sanitized['image_count'] = max(0, absint($input['image_count'] ?? 1));
-            $sanitized['excluded_images'] = sanitize_text_field($input['excluded_images'] ?? '');
+            $sanitized['excluded_images'] = implode(',', array_filter(array_map('absint', explode(',', (string) ($input['excluded_images'] ?? '')))));
             $sanitized['interval_minutes'] = max(1, absint($input['interval_minutes'] ?? 15));
-            $sanitized['send_window_start'] = preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $input['send_window_start'] ?? '') ? $input['send_window_start'] : '09:00';
-            $sanitized['send_window_end'] = preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $input['send_window_end'] ?? '') ? $input['send_window_end'] : '22:00';
+            $sanitized['send_window_start'] = preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $input['send_window_start'] ?? '') ? $input['send_window_start'] : '00:00';
+            $sanitized['send_window_end'] = preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $input['send_window_end'] ?? '') ? $input['send_window_end'] : '23:59';
             $sanitized['disable_notification'] = !empty($input['disable_notification']) ? 1 : 0;
             return $sanitized;
         }
@@ -140,10 +212,15 @@ if (!class_exists('WCRB_Plugin')) {
 
             $settings = $this->get_settings();
             list($synced, $unsynced) = $this->product_sync_counts();
+            $queue_stats = $this->queue_stats();
+            $logs = $this->get_logs();
             ?>
             <div class="wrap">
                 <h1><?php esc_html_e('WooCommerce Rubika Bridge', 'wcrb'); ?></h1>
                 <p><?php echo esc_html(sprintf(__('Synced products: %d | Unsynced products: %d', 'wcrb'), $synced, $unsynced)); ?></p>
+                <p>
+                    <?php echo esc_html(sprintf(__('Queue — Pending: %d | Processing: %d | Sent: %d | Failed: %d', 'wcrb'), $queue_stats['pending'], $queue_stats['processing'], $queue_stats['sent'], $queue_stats['failed'])); ?>
+                </p>
 
                 <form method="post" action="options.php">
                     <?php settings_fields('wcrb_settings_group'); ?>
@@ -169,8 +246,15 @@ if (!class_exists('WCRB_Plugin')) {
                             <td><input type="number" min="0" id="wcrb_image_count" name="<?php echo esc_attr(self::OPTION_KEY); ?>[image_count]" value="<?php echo esc_attr($settings['image_count']); ?>"></td>
                         </tr>
                         <tr>
-                            <th scope="row"><label for="wcrb_excluded_images"><?php esc_html_e('Excluded image attachment IDs (comma separated)', 'wcrb'); ?></label></th>
-                            <td><input type="text" id="wcrb_excluded_images" name="<?php echo esc_attr(self::OPTION_KEY); ?>[excluded_images]" class="regular-text" value="<?php echo esc_attr($settings['excluded_images']); ?>"></td>
+                            <th scope="row"><label for="wcrb_excluded_images"><?php esc_html_e('Excluded images', 'wcrb'); ?></label></th>
+                            <td>
+                                <input type="hidden" id="wcrb_excluded_images" name="<?php echo esc_attr(self::OPTION_KEY); ?>[excluded_images]" value="<?php echo esc_attr($settings['excluded_images']); ?>">
+                                <p>
+                                    <button type="button" class="button" id="wcrb_pick_images"><?php esc_html_e('Select from Media Library', 'wcrb'); ?></button>
+                                    <button type="button" class="button-link-delete" id="wcrb_clear_images"><?php esc_html_e('Clear selection', 'wcrb'); ?></button>
+                                </p>
+                                <div id="wcrb-excluded-preview"></div>
+                            </td>
                         </tr>
                         <tr>
                             <th scope="row"><label for="wcrb_interval_minutes"><?php esc_html_e('Publish interval (minutes)', 'wcrb'); ?></label></th>
@@ -194,14 +278,51 @@ if (!class_exists('WCRB_Plugin')) {
                 </form>
 
                 <hr>
-                <h2><?php esc_html_e('Bulk queue', 'wcrb'); ?></h2>
-                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                    <?php wp_nonce_field('wcrb_enqueue_all'); ?>
-                    <input type="hidden" name="action" value="wcrb_enqueue_all">
-                    <?php submit_button(__('Queue all products by category order', 'wcrb'), 'secondary', 'submit', false); ?>
+                <h2><?php esc_html_e('Queue actions', 'wcrb'); ?></h2>
+                <p>
+                    <form style="display:inline-block;margin-right:8px" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                        <?php wp_nonce_field('wcrb_enqueue_all'); ?>
+                        <input type="hidden" name="action" value="wcrb_enqueue_all">
+                        <?php submit_button(__('Queue all published products', 'wcrb'), 'secondary', 'submit', false); ?>
+                    </form>
+
+                    <form style="display:inline-block;margin-right:8px" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                        <?php wp_nonce_field('wcrb_run_queue'); ?>
+                        <input type="hidden" name="action" value="wcrb_run_queue">
+                        <?php submit_button(__('Run queue now', 'wcrb'), 'secondary', 'submit', false); ?>
+                    </form>
+
+                    <form style="display:inline-block" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('<?php echo esc_js(__('Are you sure you want to clear the queue?', 'wcrb')); ?>');">
+                        <?php wp_nonce_field('wcrb_clear_queue'); ?>
+                        <input type="hidden" name="action" value="wcrb_clear_queue">
+                        <?php submit_button(__('Clear queue', 'wcrb'), 'delete', 'submit', false); ?>
+                    </form>
+                </p>
+
+                <hr>
+                <h2><?php esc_html_e('Logs', 'wcrb'); ?></h2>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-bottom:8px">
+                    <?php wp_nonce_field('wcrb_clear_logs'); ?>
+                    <input type="hidden" name="action" value="wcrb_clear_logs">
+                    <?php submit_button(__('Clear logs', 'wcrb'), 'secondary', 'submit', false); ?>
                 </form>
+                <textarea readonly rows="14" class="large-text code"><?php echo esc_textarea(implode("\n", $logs)); ?></textarea>
             </div>
             <?php
+        }
+
+        private function queue_stats() {
+            global $wpdb;
+            $table = $wpdb->prefix . self::TABLE_SUFFIX;
+            $rows = $wpdb->get_results("SELECT status, COUNT(*) AS cnt FROM {$table} GROUP BY status", ARRAY_A);
+            $stats = array('pending' => 0, 'processing' => 0, 'sent' => 0, 'failed' => 0);
+            foreach ($rows as $row) {
+                $status = $row['status'];
+                if (isset($stats[$status])) {
+                    $stats[$status] = (int) $row['cnt'];
+                }
+            }
+            return $stats;
         }
 
         private function product_sync_counts() {
@@ -251,6 +372,7 @@ if (!class_exists('WCRB_Plugin')) {
                 }
             }
 
+            $this->add_log('info', 'Bulk enqueue completed.', array('queued' => $count));
             wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'wcrb_notice' => 'bulk', 'queued' => $count), admin_url('admin.php')));
             exit;
         }
@@ -263,13 +385,54 @@ if (!class_exists('WCRB_Plugin')) {
             $product_id = isset($_GET['product_id']) ? absint($_GET['product_id']) : 0;
             if ($product_id) {
                 $this->enqueue_product($product_id);
+                $this->add_log('info', 'Single product queued.', array('product_id' => $product_id));
             }
 
-            wp_safe_redirect(add_query_arg(array('post' => $product_id, 'action' => 'edit', 'wcrb_notice' => 'single'), admin_url('post.php')));
+            $redirect_to = wp_get_referer() ? wp_get_referer() : admin_url('post.php?post=' . $product_id . '&action=edit');
+            wp_safe_redirect(add_query_arg(array('wcrb_notice' => 'single'), $redirect_to));
+            exit;
+        }
+
+        public function handle_clear_queue() {
+            if (!current_user_can('manage_woocommerce') || !check_admin_referer('wcrb_clear_queue')) {
+                wp_die(esc_html__('Not allowed.', 'wcrb'));
+            }
+
+            global $wpdb;
+            $table = $wpdb->prefix . self::TABLE_SUFFIX;
+            $wpdb->query("TRUNCATE TABLE {$table}");
+            $this->add_log('warning', 'Queue cleared by admin.');
+
+            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'wcrb_notice' => 'clear_queue'), admin_url('admin.php')));
+            exit;
+        }
+
+        public function handle_clear_logs() {
+            if (!current_user_can('manage_woocommerce') || !check_admin_referer('wcrb_clear_logs')) {
+                wp_die(esc_html__('Not allowed.', 'wcrb'));
+            }
+
+            update_option(self::LOG_OPTION, array(), false);
+            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'wcrb_notice' => 'clear_logs'), admin_url('admin.php')));
+            exit;
+        }
+
+        public function handle_run_queue_now() {
+            if (!current_user_can('manage_woocommerce') || !check_admin_referer('wcrb_run_queue')) {
+                wp_die(esc_html__('Not allowed.', 'wcrb'));
+            }
+
+            $this->process_queue(true);
+            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'wcrb_notice' => 'run_queue'), admin_url('admin.php')));
             exit;
         }
 
         private function enqueue_product($product_id) {
+            $post = get_post($product_id);
+            if (!$post || $post->post_type !== 'product' || $post->post_status !== 'publish') {
+                return false;
+            }
+
             global $wpdb;
             $table = $wpdb->prefix . self::TABLE_SUFFIX;
 
@@ -297,15 +460,16 @@ if (!class_exists('WCRB_Plugin')) {
             return (bool) $result;
         }
 
-        public function process_queue() {
-            if (!$this->is_in_send_window()) {
+        public function process_queue($force = false) {
+            if (!$force && !$this->is_in_send_window()) {
+                $this->add_log('info', 'Queue paused: outside send window.');
                 return;
             }
 
             $settings = $this->get_settings();
             $last_sent = (int) get_option(self::LAST_SENT_OPTION, 0);
             $min_gap = max(1, absint($settings['interval_minutes'])) * 60;
-            if ($last_sent > 0 && (time() - $last_sent) < $min_gap) {
+            if (!$force && $last_sent > 0 && (time() - $last_sent) < $min_gap) {
                 return;
             }
 
@@ -332,6 +496,7 @@ if (!class_exists('WCRB_Plugin')) {
                 );
                 update_option(self::LAST_SENT_OPTION, time(), false);
                 update_post_meta((int) $item->product_id, '_wcrb_last_sent_at', current_time('mysql'));
+                $this->add_log('info', 'Product sent to Rubika.', array('product_id' => (int) $item->product_id));
             } else {
                 $attempts = (int) $item->attempts + 1;
                 $status = $attempts >= 5 ? 'failed' : 'pending';
@@ -347,6 +512,7 @@ if (!class_exists('WCRB_Plugin')) {
                     array('%s', '%d', '%s', '%s'),
                     array('%d')
                 );
+                $this->add_log('error', 'Send failed.', array('product_id' => (int) $item->product_id, 'message' => $sent['message'], 'attempts' => $attempts));
             }
         }
 
@@ -366,14 +532,14 @@ if (!class_exists('WCRB_Plugin')) {
         private function send_product_to_rubika($product_id) {
             $settings = $this->get_settings();
             $product = wc_get_product($product_id);
-            if (!$product) {
-                return array('success' => false, 'message' => 'Invalid product');
+            if (!$product || $product->get_status() !== 'publish') {
+                return array('success' => false, 'message' => 'Invalid or unpublished product');
             }
 
             $text = $this->render_template($product, $settings);
             $images = $this->collect_images($product, (int) $settings['image_count'], $settings['excluded_images']);
 
-            foreach ($images as $attachment_id) {
+            foreach ($images as $index => $attachment_id) {
                 $upload = $this->upload_image_to_rubika($attachment_id, $settings['bot_token']);
                 if (!$upload['success']) {
                     return $upload;
@@ -382,17 +548,17 @@ if (!class_exists('WCRB_Plugin')) {
                 $file_payload = array(
                     'chat_id' => $settings['channel'],
                     'file_id' => $upload['file_id'],
-                    'text' => $text,
+                    'text' => $index === 0 ? $text : '',
                     'disable_notification' => (bool) $settings['disable_notification'],
-                    'inline_keypad' => $this->build_buy_keypad($product),
+                    'inline_keypad' => $index === 0 ? $this->build_buy_keypad($product) : null,
                 );
 
-                $result = $this->rubika_api_request($settings['bot_token'], 'sendFile', $file_payload);
+                $result = $this->rubika_api_request($settings['bot_token'], 'sendFile', array_filter($file_payload, function($value) {
+                    return $value !== null;
+                }));
                 if (!$result['success']) {
                     return $result;
                 }
-
-                $text = '';
             }
 
             if (empty($images)) {
@@ -474,11 +640,21 @@ if (!class_exists('WCRB_Plugin')) {
             }
 
             $request = $this->rubika_api_request($token, 'requestSendFile', array('type' => 'Image'));
-            if (!$request['success'] || empty($request['data']['upload_url'])) {
+            if (!$request['success']) {
+                return $request;
+            }
+
+            $upload_url = '';
+            if (!empty($request['data']['upload_url'])) {
+                $upload_url = $request['data']['upload_url'];
+            } elseif (!empty($request['data']['data']['upload_url'])) {
+                $upload_url = $request['data']['data']['upload_url'];
+            }
+
+            if (empty($upload_url)) {
                 return array('success' => false, 'message' => 'Could not get upload URL');
             }
 
-            $upload_url = $request['data']['upload_url'];
             $response = wp_remote_post($upload_url, array(
                 'timeout' => 60,
                 'body' => array(
@@ -491,11 +667,18 @@ if (!class_exists('WCRB_Plugin')) {
             }
 
             $json = json_decode(wp_remote_retrieve_body($response), true);
-            if (!is_array($json) || empty($json['file_id'])) {
+            $file_id = '';
+            if (!empty($json['file_id'])) {
+                $file_id = $json['file_id'];
+            } elseif (!empty($json['data']['file_id'])) {
+                $file_id = $json['data']['file_id'];
+            }
+
+            if (empty($file_id)) {
                 return array('success' => false, 'message' => 'No file_id in upload response');
             }
 
-            return array('success' => true, 'file_id' => $json['file_id']);
+            return array('success' => true, 'file_id' => $file_id);
         }
 
         private function build_buy_keypad($product) {
@@ -507,7 +690,6 @@ if (!class_exists('WCRB_Plugin')) {
                                 'id' => 'buy_' . $product->get_id(),
                                 'type' => 'Simple',
                                 'button_text' => '🛒 خرید محصول',
-                                'url' => get_permalink($product->get_id()),
                             ),
                         ),
                     ),
@@ -516,6 +698,10 @@ if (!class_exists('WCRB_Plugin')) {
         }
 
         private function rubika_api_request($token, $method, $payload) {
+            if (empty($token)) {
+                return array('success' => false, 'message' => 'Bot token is empty');
+            }
+
             $url = sprintf('https://botapi.rubika.ir/v3/%s/%s', rawurlencode($token), $method);
             $response = wp_remote_post($url, array(
                 'timeout' => 45,
@@ -528,30 +714,46 @@ if (!class_exists('WCRB_Plugin')) {
             }
 
             $status_code = wp_remote_retrieve_response_code($response);
-            $body = json_decode(wp_remote_retrieve_body($response), true);
+            $raw_body = wp_remote_retrieve_body($response);
+            $body = json_decode($raw_body, true);
+
             if ($status_code < 200 || $status_code >= 300) {
-                return array('success' => false, 'message' => 'HTTP ' . $status_code);
+                return array('success' => false, 'message' => 'HTTP ' . $status_code . ': ' . wp_strip_all_tags($raw_body));
             }
 
             if (!is_array($body)) {
                 return array('success' => false, 'message' => 'Invalid JSON response');
             }
 
+            if (isset($body['ok']) && !$body['ok']) {
+                $error_text = !empty($body['description']) ? $body['description'] : 'Rubika API returned ok=false';
+                return array('success' => false, 'message' => $error_text, 'data' => $body);
+            }
+
             return array('success' => true, 'data' => $body, 'message' => 'OK');
         }
 
         public function admin_bar_publish_button($wp_admin_bar) {
-            if (!current_user_can('edit_products') || !is_admin()) {
+            if (!current_user_can('edit_products')) {
                 return;
             }
 
-            $screen = function_exists('get_current_screen') ? get_current_screen() : null;
-            if (!$screen || $screen->base !== 'post' || $screen->post_type !== 'product') {
-                return;
+            $product_id = 0;
+            if (is_admin()) {
+                $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+                if ($screen && $screen->base === 'post' && $screen->post_type === 'product') {
+                    $product_id = isset($_GET['post']) ? absint($_GET['post']) : 0;
+                }
+            } elseif (function_exists('is_product') && is_product()) {
+                $product_id = get_queried_object_id();
             }
 
-            $product_id = isset($_GET['post']) ? absint($_GET['post']) : 0;
             if (!$product_id) {
+                return;
+            }
+
+            $post = get_post($product_id);
+            if (!$post || $post->post_status !== 'publish') {
                 return;
             }
 
@@ -565,7 +767,7 @@ if (!class_exists('WCRB_Plugin')) {
 
             $wp_admin_bar->add_node(array(
                 'id' => 'wcrb_publish_product',
-                'title' => __('Queue for Rubika', 'wcrb'),
+                'title' => __('ارسال به صف روبیکا', 'wcrb'),
                 'href' => $url,
                 'meta' => array('class' => 'wcrb-publish-product'),
             ));
@@ -584,6 +786,53 @@ if (!class_exists('WCRB_Plugin')) {
                 $queued = isset($_GET['queued']) ? absint($_GET['queued']) : 0;
                 echo '<div class="notice notice-success is-dismissible"><p>' . esc_html(sprintf(__('Queued %d products for Rubika.', 'wcrb'), $queued)) . '</p></div>';
             }
+
+            if ($_GET['wcrb_notice'] === 'clear_queue') {
+                echo '<div class="notice notice-warning is-dismissible"><p>' . esc_html__('Queue has been cleared.', 'wcrb') . '</p></div>';
+            }
+
+            if ($_GET['wcrb_notice'] === 'clear_logs') {
+                echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__('Logs cleared.', 'wcrb') . '</p></div>';
+            }
+
+            if ($_GET['wcrb_notice'] === 'run_queue') {
+                echo '<div class="notice notice-info is-dismissible"><p>' . esc_html__('Queue runner executed once.', 'wcrb') . '</p></div>';
+            }
+        }
+
+        private function add_log($level, $message, $context = array()) {
+            $logs = get_option(self::LOG_OPTION, array());
+            if (!is_array($logs)) {
+                $logs = array();
+            }
+
+            $line = sprintf(
+                '[%s] [%s] %s',
+                current_time('mysql'),
+                strtoupper(sanitize_key($level)),
+                sanitize_text_field($message)
+            );
+
+            if (!empty($context)) {
+                $encoded = wp_json_encode($context);
+                if ($encoded) {
+                    $line .= ' | ' . $encoded;
+                }
+            }
+
+            $logs[] = $line;
+            if (count($logs) > 300) {
+                $logs = array_slice($logs, -300);
+            }
+            update_option(self::LOG_OPTION, $logs, false);
+        }
+
+        private function get_logs() {
+            $logs = get_option(self::LOG_OPTION, array());
+            if (!is_array($logs)) {
+                return array();
+            }
+            return array_reverse($logs);
         }
     }
 
