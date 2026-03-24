@@ -36,6 +36,7 @@ if (!class_exists('WCRB_Plugin')) {
             add_action('admin_post_wcrb_run_queue', array($this, 'handle_run_queue_now'));
             add_action('admin_post_wcrb_clear_database', array($this, 'handle_clear_database'));
             add_action('admin_post_wcrb_send_test_message', array($this, 'handle_send_test_message'));
+            add_action('admin_post_wcrb_reset_sync_records', array($this, 'handle_reset_sync_records'));
 
             add_action('admin_bar_menu', array($this, 'admin_bar_publish_button'), 100);
             add_action('admin_notices', array($this, 'admin_notice'));
@@ -356,6 +357,11 @@ if (!class_exists('WCRB_Plugin')) {
                         <input type="hidden" name="action" value="wcrb_clear_database">
                         <?php submit_button(__('Clear plugin database', 'wcrb'), 'delete', 'submit', false); ?>
                     </form>
+                    <form style="display:inline-block;margin-left:8px" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('<?php echo esc_js(__('Reset synced/unsynced product records?', 'wcrb')); ?>');">
+                        <?php wp_nonce_field('wcrb_reset_sync_records'); ?>
+                        <input type="hidden" name="action" value="wcrb_reset_sync_records">
+                        <?php submit_button(__('Reset synced/unsynced records', 'wcrb'), 'secondary', 'submit', false); ?>
+                    </form>
                 </p>
 
                 <hr>
@@ -445,10 +451,24 @@ if (!class_exists('WCRB_Plugin')) {
             if ($product_id) {
                 $this->enqueue_product($product_id);
                 $this->add_log('info', 'Single product queued.', array('product_id' => $product_id));
+                $this->process_queue(true);
             }
 
             $redirect_to = wp_get_referer() ? wp_get_referer() : admin_url('post.php?post=' . $product_id . '&action=edit');
             wp_safe_redirect(add_query_arg(array('wcrb_notice' => 'single'), $redirect_to));
+            exit;
+        }
+
+        public function handle_reset_sync_records() {
+            if (!current_user_can('manage_woocommerce') || !check_admin_referer('wcrb_reset_sync_records')) {
+                wp_die(esc_html__('Not allowed.', 'wcrb'));
+            }
+
+            global $wpdb;
+            $wpdb->delete($wpdb->postmeta, array('meta_key' => '_wcrb_last_sent_at'), array('%s'));
+            $this->add_log('warning', 'Synced/unsynced records reset by admin.');
+
+            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'wcrb_notice' => 'reset_sync'), admin_url('admin.php')));
             exit;
         }
 
@@ -760,20 +780,25 @@ if (!class_exists('WCRB_Plugin')) {
                 $min_sale = $product->get_variation_sale_price('min', true);
 
                 if (!empty($min_sale) && $min_sale > 0 && $min_sale < $min_regular) {
-                    return sprintf('🔥 %s (به‌جای ~%s~)', wc_price($min_sale), wc_price($min_regular));
+                    return sprintf('🔥 %s (به‌جای ~%s~)', $this->format_toman($min_sale), $this->format_toman($min_regular));
                 }
 
-                return sprintf('💸 %s', wc_price($product->get_variation_price('min', true)));
+                return sprintf('💸 %s', $this->format_toman($product->get_variation_price('min', true)));
             }
 
             $regular = $product->get_regular_price();
             $sale = $product->get_sale_price();
 
             if (!empty($sale) && (float) $sale > 0 && (float) $regular > (float) $sale) {
-                return sprintf('🔥 %s (به‌جای ~%s~)', wc_price($sale), wc_price($regular));
+                return sprintf('🔥 %s (به‌جای ~%s~)', $this->format_toman($sale), $this->format_toman($regular));
             }
 
-            return sprintf('💸 %s', wc_price($product->get_price()));
+            return sprintf('💸 %s', $this->format_toman($product->get_price()));
+        }
+
+        private function format_toman($amount) {
+            $numeric = is_numeric($amount) ? (float) $amount : 0;
+            return number_format_i18n($numeric) . ' تومان';
         }
 
         private function collect_images($product, $limit, $excluded_images_csv) {
@@ -815,6 +840,9 @@ if (!class_exists('WCRB_Plugin')) {
 
             $request = $this->rubika_api_request($token, 'requestSendFile', array('type' => 'Image'));
             if (!$request['success']) {
+                $request = $this->rubika_api_request($token, 'requestSendFile', array('type' => 'File'));
+            }
+            if (!$request['success']) {
                 if ($cleanup_temp_file && file_exists($path)) {
                     @unlink($path);
                 }
@@ -835,22 +863,44 @@ if (!class_exists('WCRB_Plugin')) {
                 return array('success' => false, 'message' => 'Could not get upload URL');
             }
 
-            $file_part = function_exists('curl_file_create') ? curl_file_create($path) : '@' . $path;
-            $response = wp_remote_post($upload_url, array(
-                'timeout' => 60,
-                'body' => array(
-                    'file' => $file_part,
-                ),
-            ));
-
-            if (is_wp_error($response)) {
-                if ($cleanup_temp_file && file_exists($path)) {
-                    @unlink($path);
+            $raw_upload_body = '';
+            if (function_exists('curl_init') && class_exists('CURLFile')) {
+                $curl = curl_init();
+                curl_setopt_array($curl, array(
+                    CURLOPT_URL => $upload_url,
+                    CURLOPT_POST => true,
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_TIMEOUT => 60,
+                    CURLOPT_POSTFIELDS => array(
+                        'file' => new CURLFile($path),
+                    ),
+                ));
+                $curl_response = curl_exec($curl);
+                if ($curl_response !== false) {
+                    $raw_upload_body = (string) $curl_response;
                 }
-                return array('success' => false, 'message' => $response->get_error_message());
+                curl_close($curl);
             }
 
-            $raw_upload_body = wp_remote_retrieve_body($response);
+            if ($raw_upload_body === '') {
+                $file_part = function_exists('curl_file_create') ? curl_file_create($path) : '@' . $path;
+                $response = wp_remote_post($upload_url, array(
+                    'timeout' => 60,
+                    'body' => array(
+                        'file' => $file_part,
+                    ),
+                ));
+
+                if (is_wp_error($response)) {
+                    if ($cleanup_temp_file && file_exists($path)) {
+                        @unlink($path);
+                    }
+                    return array('success' => false, 'message' => $response->get_error_message());
+                }
+
+                $raw_upload_body = wp_remote_retrieve_body($response);
+            }
+
             $json = json_decode($raw_upload_body, true);
             $file_id = $this->extract_file_id_from_upload_response($json);
 
@@ -1081,6 +1131,10 @@ if (!class_exists('WCRB_Plugin')) {
 
             if ($_GET['wcrb_notice'] === 'test_fail') {
                 echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__('Test message failed. Check logs for details.', 'wcrb') . '</p></div>';
+            }
+
+            if ($_GET['wcrb_notice'] === 'reset_sync') {
+                echo '<div class="notice notice-warning is-dismissible"><p>' . esc_html__('Synced/unsynced product records were reset.', 'wcrb') . '</p></div>';
             }
         }
 
