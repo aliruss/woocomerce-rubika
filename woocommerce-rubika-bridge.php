@@ -128,6 +128,7 @@ if (!class_exists('WCRB_Plugin')) {
                 'send_window_start' => '00:00',
                 'send_window_end' => '23:59',
                 'disable_notification' => 0,
+                'enable_logs' => 1,
             );
         }
 
@@ -249,6 +250,7 @@ if (!class_exists('WCRB_Plugin')) {
             $sanitized['send_window_start'] = preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $input['send_window_start'] ?? '') ? $input['send_window_start'] : '00:00';
             $sanitized['send_window_end'] = preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $input['send_window_end'] ?? '') ? $input['send_window_end'] : '23:59';
             $sanitized['disable_notification'] = !empty($input['disable_notification']) ? 1 : 0;
+            $sanitized['enable_logs'] = !empty($input['enable_logs']) ? 1 : 0;
             return $sanitized;
         }
 
@@ -319,6 +321,10 @@ if (!class_exists('WCRB_Plugin')) {
                         <tr>
                             <th scope="row"><label for="wcrb_disable_notification"><?php esc_html_e('Disable Rubika notification', 'wcrb'); ?></label></th>
                             <td><label><input type="checkbox" id="wcrb_disable_notification" name="<?php echo esc_attr(self::OPTION_KEY); ?>[disable_notification]" value="1" <?php checked((int) $settings['disable_notification'], 1); ?>> <?php esc_html_e('Send silently', 'wcrb'); ?></label></td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><label for="wcrb_enable_logs"><?php esc_html_e('Enable logging', 'wcrb'); ?></label></th>
+                            <td><label><input type="checkbox" id="wcrb_enable_logs" name="<?php echo esc_attr(self::OPTION_KEY); ?>[enable_logs]" value="1" <?php checked((int) $settings['enable_logs'], 1); ?>> <?php esc_html_e('Store plugin logs', 'wcrb'); ?></label></td>
                         </tr>
                     </table>
                     <?php submit_button(); ?>
@@ -835,7 +841,7 @@ if (!class_exists('WCRB_Plugin')) {
             $path = $prepared['path'];
             $cleanup_temp_file = !empty($prepared['temporary']);
             if ($cleanup_temp_file) {
-                $this->add_log('info', 'Converted WEBP to JPG for Rubika upload.', array('source' => basename($original_path)));
+                $this->add_log('info', 'Converted source image to JPG for Rubika upload.', array('source' => basename($original_path)));
             }
 
             $request = $this->rubika_api_request($token, 'requestSendFile', array('type' => 'Image'));
@@ -941,15 +947,22 @@ if (!class_exists('WCRB_Plugin')) {
 
         private function prepare_image_for_rubika_upload($path) {
             $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-            if ($extension !== 'webp') {
+            if (!in_array($extension, array('webp', 'avif'), true)) {
                 return array('path' => $path, 'temporary' => false);
             }
 
-            if (!function_exists('imagecreatefromwebp') || !function_exists('imagejpeg')) {
+            if (!function_exists('imagejpeg')) {
                 return array('path' => $path, 'temporary' => false);
             }
 
-            $image_resource = @imagecreatefromwebp($path);
+            $image_resource = false;
+            if ($extension === 'webp' && function_exists('imagecreatefromwebp')) {
+                $image_resource = @imagecreatefromwebp($path);
+            }
+            if ($extension === 'avif' && function_exists('imagecreatefromavif')) {
+                $image_resource = @imagecreatefromavif($path);
+            }
+
             if (!$image_resource) {
                 return array('path' => $path, 'temporary' => false);
             }
@@ -1088,8 +1101,15 @@ if (!class_exists('WCRB_Plugin')) {
             );
 
             $wp_admin_bar->add_node(array(
+                'id' => 'wcrb_social_menu',
+                'title' => __('شبکه اجتماعی', 'wcrb'),
+                'href' => false,
+            ));
+
+            $wp_admin_bar->add_node(array(
                 'id' => 'wcrb_publish_product',
-                'title' => __('ارسال به صف روبیکا', 'wcrb'),
+                'parent' => 'wcrb_social_menu',
+                'title' => __('ارسال به روبیکا', 'wcrb'),
                 'href' => $url,
                 'meta' => array('class' => 'wcrb-publish-product'),
             ));
@@ -1139,6 +1159,10 @@ if (!class_exists('WCRB_Plugin')) {
         }
 
         private function add_log($level, $message, $context = array()) {
+            if (!$this->is_logging_enabled()) {
+                return;
+            }
+
             $logs = get_option(self::LOG_OPTION, array());
             if (!is_array($logs)) {
                 $logs = array();
@@ -1163,6 +1187,11 @@ if (!class_exists('WCRB_Plugin')) {
                 $logs = array_slice($logs, -300);
             }
             update_option(self::LOG_OPTION, $logs, false);
+        }
+
+        private function is_logging_enabled() {
+            $settings = $this->get_settings();
+            return !empty($settings['enable_logs']);
         }
 
         private function get_logs() {
