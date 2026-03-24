@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Rubika Bridge
  * Description: Lightweight WooCommerce to Rubika publisher with queue, scheduling, and per-product controls.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: Codex
  * Requires Plugins: woocommerce
  */
@@ -655,10 +655,11 @@ if (!class_exists('WCRB_Plugin')) {
                 return array('success' => false, 'message' => 'Could not get upload URL');
             }
 
+            $file_part = function_exists('curl_file_create') ? curl_file_create($path) : '@' . $path;
             $response = wp_remote_post($upload_url, array(
                 'timeout' => 60,
                 'body' => array(
-                    'file' => curl_file_create($path),
+                    'file' => $file_part,
                 ),
             ));
 
@@ -666,19 +667,60 @@ if (!class_exists('WCRB_Plugin')) {
                 return array('success' => false, 'message' => $response->get_error_message());
             }
 
-            $json = json_decode(wp_remote_retrieve_body($response), true);
-            $file_id = '';
-            if (!empty($json['file_id'])) {
-                $file_id = $json['file_id'];
-            } elseif (!empty($json['data']['file_id'])) {
-                $file_id = $json['data']['file_id'];
+            $raw_upload_body = wp_remote_retrieve_body($response);
+            $json = json_decode($raw_upload_body, true);
+            $file_id = $this->extract_file_id_from_upload_response($json);
+
+            if (empty($file_id)) {
+                // Fallback: some upload endpoints expect raw binary body.
+                $fallback_response = wp_remote_post($upload_url, array(
+                    'timeout' => 60,
+                    'headers' => array(
+                        'Content-Type' => wp_check_filetype($path)['type'] ?: 'application/octet-stream',
+                    ),
+                    'body' => file_get_contents($path),
+                ));
+
+                if (!is_wp_error($fallback_response)) {
+                    $fallback_raw = wp_remote_retrieve_body($fallback_response);
+                    $fallback_json = json_decode($fallback_raw, true);
+                    $file_id = $this->extract_file_id_from_upload_response($fallback_json);
+                    if (empty($file_id)) {
+                        $raw_upload_body = $fallback_raw;
+                    }
+                }
             }
 
             if (empty($file_id)) {
-                return array('success' => false, 'message' => 'No file_id in upload response');
+                $body_for_log = is_string($raw_upload_body) ? mb_substr($raw_upload_body, 0, 400) : '';
+                return array('success' => false, 'message' => 'No file_id in upload response: ' . $body_for_log);
             }
 
             return array('success' => true, 'file_id' => $file_id);
+        }
+
+        private function extract_file_id_from_upload_response($json) {
+            if (!is_array($json)) {
+                return '';
+            }
+
+            $possible_keys = array('file_id', 'fileId', 'id');
+            foreach ($possible_keys as $key) {
+                if (!empty($json[$key]) && is_scalar($json[$key])) {
+                    return (string) $json[$key];
+                }
+            }
+
+            foreach ($json as $value) {
+                if (is_array($value)) {
+                    $nested = $this->extract_file_id_from_upload_response($value);
+                    if (!empty($nested)) {
+                        return $nested;
+                    }
+                }
+            }
+
+            return '';
         }
 
         private function build_buy_keypad($product) {
