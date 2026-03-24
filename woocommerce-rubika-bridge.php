@@ -34,6 +34,8 @@ if (!class_exists('WCRB_Plugin')) {
             add_action('admin_post_wcrb_clear_queue', array($this, 'handle_clear_queue'));
             add_action('admin_post_wcrb_clear_logs', array($this, 'handle_clear_logs'));
             add_action('admin_post_wcrb_run_queue', array($this, 'handle_run_queue_now'));
+            add_action('admin_post_wcrb_clear_database', array($this, 'handle_clear_database'));
+            add_action('admin_post_wcrb_send_test_message', array($this, 'handle_send_test_message'));
 
             add_action('admin_bar_menu', array($this, 'admin_bar_publish_button'), 100);
             add_action('admin_notices', array($this, 'admin_notice'));
@@ -342,6 +344,19 @@ if (!class_exists('WCRB_Plugin')) {
                         <?php submit_button(__('Clear queue', 'wcrb'), 'delete', 'submit', false); ?>
                     </form>
                 </p>
+                <p>
+                    <form style="display:inline-block;margin-right:8px" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                        <?php wp_nonce_field('wcrb_send_test_message'); ?>
+                        <input type="hidden" name="action" value="wcrb_send_test_message">
+                        <?php submit_button(__('Send Hello test message', 'wcrb'), 'secondary', 'submit', false); ?>
+                    </form>
+
+                    <form style="display:inline-block" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" onsubmit="return confirm('<?php echo esc_js(__('This will clear queue table, plugin logs/options, and sync markers. Continue?', 'wcrb')); ?>');">
+                        <?php wp_nonce_field('wcrb_clear_database'); ?>
+                        <input type="hidden" name="action" value="wcrb_clear_database">
+                        <?php submit_button(__('Clear plugin database', 'wcrb'), 'delete', 'submit', false); ?>
+                    </form>
+                </p>
 
                 <hr>
                 <h2><?php esc_html_e('Logs', 'wcrb'); ?></h2>
@@ -468,6 +483,57 @@ if (!class_exists('WCRB_Plugin')) {
 
             $this->process_queue(true);
             wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'wcrb_notice' => 'run_queue'), admin_url('admin.php')));
+            exit;
+        }
+
+        public function handle_clear_database() {
+            if (!current_user_can('manage_woocommerce') || !check_admin_referer('wcrb_clear_database')) {
+                wp_die(esc_html__('Not allowed.', 'wcrb'));
+            }
+
+            global $wpdb;
+            $table = $wpdb->prefix . self::TABLE_SUFFIX;
+            $wpdb->query("TRUNCATE TABLE {$table}");
+
+            delete_option(self::LAST_SENT_OPTION);
+            delete_option(self::LAST_RUNNER_PING_OPTION);
+            delete_option(self::LOG_OPTION);
+
+            $wpdb->delete($wpdb->postmeta, array('meta_key' => '_wcrb_last_sent_at'), array('%s'));
+            $this->add_log('warning', 'Plugin database data cleared by admin.');
+
+            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'wcrb_notice' => 'clear_database'), admin_url('admin.php')));
+            exit;
+        }
+
+        public function handle_send_test_message() {
+            if (!current_user_can('manage_woocommerce') || !check_admin_referer('wcrb_send_test_message')) {
+                wp_die(esc_html__('Not allowed.', 'wcrb'));
+            }
+
+            $settings = $this->get_settings();
+            $payload = array(
+                'chat_id' => $settings['channel'],
+                'text' => 'Hello from WooCommerce Rubika Bridge 👋',
+                'disable_notification' => (bool) $settings['disable_notification'],
+            );
+            $result = $this->rubika_api_request($settings['bot_token'], 'sendMessage', $payload);
+            if (!$result['success'] && strpos($result['message'], 'INVALID_INPUT') !== false) {
+                $payload = array(
+                    'chat_id' => $settings['channel'],
+                    'text' => 'Hello from WooCommerce Rubika Bridge 👋',
+                );
+                $result = $this->rubika_api_request($settings['bot_token'], 'sendMessage', $payload);
+            }
+
+            if ($result['success']) {
+                $this->add_log('info', 'Test message sent successfully.');
+                wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'wcrb_notice' => 'test_ok'), admin_url('admin.php')));
+                exit;
+            }
+
+            $this->add_log('error', 'Test message failed.', array('message' => $result['message']));
+            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'wcrb_notice' => 'test_fail'), admin_url('admin.php')));
             exit;
         }
 
@@ -624,13 +690,12 @@ if (!class_exists('WCRB_Plugin')) {
             }
 
             if (empty($images) || ($image_send_failed && !$message_sent)) {
-                $payload = array(
+                return $this->send_text_message($settings['bot_token'], array(
                     'chat_id' => $settings['channel'],
                     'text' => $text,
                     'disable_notification' => (bool) $settings['disable_notification'],
                     'inline_keypad' => $this->build_buy_keypad($product),
-                );
-                return $this->rubika_api_request($settings['bot_token'], 'sendMessage', $payload);
+                ));
             }
 
             return array('success' => true, 'message' => 'Sent');
@@ -645,10 +710,35 @@ if (!class_exists('WCRB_Plugin')) {
                 if ($result['success']) {
                     return $result;
                 }
+                if (strpos($result['message'], 'INVALID_INPUT') !== false) {
+                    $stripped_payload = $payload;
+                    unset($stripped_payload['inline_keypad'], $stripped_payload['disable_notification']);
+                    $retry = $this->rubika_api_request($token, $method, $stripped_payload);
+                    if ($retry['success']) {
+                        return $retry;
+                    }
+                }
                 $last_error = $method . ': ' . $result['message'];
             }
 
             return array('success' => false, 'message' => $last_error);
+        }
+
+        private function send_text_message($token, $payload) {
+            $result = $this->rubika_api_request($token, 'sendMessage', $payload);
+            if ($result['success']) {
+                return $result;
+            }
+
+            if (strpos($result['message'], 'INVALID_INPUT') !== false) {
+                $fallback_payload = array(
+                    'chat_id' => $payload['chat_id'],
+                    'text' => $payload['text'],
+                );
+                return $this->rubika_api_request($token, 'sendMessage', $fallback_payload);
+            }
+
+            return $result;
         }
 
         private function render_template($product, $settings) {
@@ -979,6 +1069,18 @@ if (!class_exists('WCRB_Plugin')) {
 
             if ($_GET['wcrb_notice'] === 'run_queue') {
                 echo '<div class="notice notice-info is-dismissible"><p>' . esc_html__('Queue runner executed once.', 'wcrb') . '</p></div>';
+            }
+
+            if ($_GET['wcrb_notice'] === 'clear_database') {
+                echo '<div class="notice notice-warning is-dismissible"><p>' . esc_html__('Plugin database data has been cleared.', 'wcrb') . '</p></div>';
+            }
+
+            if ($_GET['wcrb_notice'] === 'test_ok') {
+                echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__('Test message sent successfully.', 'wcrb') . '</p></div>';
+            }
+
+            if ($_GET['wcrb_notice'] === 'test_fail') {
+                echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__('Test message failed. Check logs for details.', 'wcrb') . '</p></div>';
             }
         }
 
