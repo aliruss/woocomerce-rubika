@@ -605,7 +605,7 @@ if (!class_exists('WCRB_Plugin')) {
                     'inline_keypad' => $index === 0 ? $this->build_buy_keypad($product) : null,
                 );
 
-                $result = $this->rubika_api_request($settings['bot_token'], 'sendFile', array_filter($file_payload, function($value) {
+                $result = $this->send_image_message($settings['bot_token'], array_filter($file_payload, function($value) {
                     return $value !== null;
                 }));
                 if (!$result['success']) {
@@ -634,6 +634,21 @@ if (!class_exists('WCRB_Plugin')) {
             }
 
             return array('success' => true, 'message' => 'Sent');
+        }
+
+        private function send_image_message($token, $payload) {
+            $methods = array('sendPhoto', 'sendImage', 'sendFile');
+            $last_error = 'Image send failed';
+
+            foreach ($methods as $method) {
+                $result = $this->rubika_api_request($token, $method, $payload);
+                if ($result['success']) {
+                    return $result;
+                }
+                $last_error = $method . ': ' . $result['message'];
+            }
+
+            return array('success' => false, 'message' => $last_error);
         }
 
         private function render_template($product, $settings) {
@@ -886,6 +901,15 @@ if (!class_exists('WCRB_Plugin')) {
             if (isset($body['ok']) && !$body['ok']) {
                 $error_text = !empty($body['description']) ? $body['description'] : 'Rubika API returned ok=false';
                 return array('success' => false, 'message' => $error_text, 'data' => $body);
+            }
+
+            if (isset($body['status'])) {
+                $normalized = strtoupper((string) $body['status']);
+                $allowed = array('OK', 'SUCCESS');
+                if (!in_array($normalized, $allowed, true)) {
+                    $error_text = !empty($body['description']) ? $body['description'] : ('Rubika status: ' . $body['status']);
+                    return array('success' => false, 'message' => $error_text, 'data' => $body);
+                }
             }
 
             return array('success' => true, 'data' => $body, 'message' => 'OK');
