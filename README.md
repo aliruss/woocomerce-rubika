@@ -43,3 +43,10 @@
 - هنگام فعال‌سازی یا اولین اجرای افزونه، `dbDelta` ساختار جدول صف را به‌روز می‌کند.
 - رکوردهای صف قدیمی که مقدار `network` ندارند با `rubika` مقداردهی می‌شوند تا رفتار قبلی حفظ شود.
 - تنظیمات قدیمی Rubika حفظ شده‌اند؛ تنظیمات Telegram جدید و مستقل هستند.
+
+### Phase 2 - Python Telegram relay server
+- پوشه `telegram-relay/` اضافه شد و شامل FastAPI relay server برای دریافت payload وردپرس و ارسال امن به Telegram Bot API است.
+- Relay از `.env` برای `TELEGRAM_BOT_TOKEN`، `TELEGRAM_CHAT_ID`، `RELAY_API_KEY` و HMAC اختیاری استفاده می‌کند.
+- endpoint اصلی `POST /send/telegram` با payload تولیدشده در Phase 1 سازگار است.
+- Relay تصاویر محصول را دانلود/اعتبارسنجی می‌کند، با `sendPhoto` یا `sendMediaGroup` ارسال می‌کند و فایل‌های موقت را بعد از موفقیت یا خطا پاک می‌کند.
+- مستندات نصب، systemd، Docker و نمونه curl در `telegram-relay/README.md` قرار دارد.
