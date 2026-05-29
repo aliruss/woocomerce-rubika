@@ -746,18 +746,25 @@ if (!class_exists('WCRB_Plugin')) {
             $text = $this->render_template($product, $settings);
             $images = $this->collect_images($product, (int) $settings['image_count'], $settings['excluded_images']);
 
-            $image_send_failed = false;
-            $message_sent = false;
+            if (empty($images)) {
+                $this->add_log('info', 'No product image found; sending text-only Rubika message.', array('product_id' => $product_id));
+                return $this->send_text_message($settings['bot_token'], array(
+                    'chat_id' => $settings['channel'],
+                    'text' => $text,
+                    'disable_notification' => (bool) $settings['disable_notification'],
+                    'inline_keypad' => $this->build_buy_keypad($product),
+                ));
+            }
+
             foreach ($images as $index => $attachment_id) {
-                $upload = $this->upload_image_to_rubika($attachment_id, $settings['bot_token']);
+                $upload = $this->upload_image_to_rubika($attachment_id, $settings['bot_token'], $product_id);
                 if (!$upload['success']) {
-                    $image_send_failed = true;
-                    $this->add_log('warning', 'Image upload failed, fallback to text-only message.', array(
+                    $this->add_log('error', 'Image upload failed; product will remain queued for retry.', array(
                         'product_id' => $product_id,
                         'attachment_id' => $attachment_id,
                         'reason' => $upload['message'],
                     ));
-                    break;
+                    return array('success' => false, 'message' => 'Image upload failed for attachment ' . $attachment_id . ': ' . $upload['message']);
                 }
 
                 $file_payload = array(
@@ -772,26 +779,18 @@ if (!class_exists('WCRB_Plugin')) {
                     return $value !== null;
                 }));
                 if (!$result['success']) {
-                    $image_send_failed = true;
-                    $this->add_log('warning', 'Image send failed, fallback to text-only message.', array(
+                    $this->add_log('error', 'Image send failed; product will remain queued for retry.', array(
                         'product_id' => $product_id,
                         'attachment_id' => $attachment_id,
                         'reason' => $result['message'],
                     ));
-                    break;
+                    return array('success' => false, 'message' => 'Image send failed for attachment ' . $attachment_id . ': ' . $result['message']);
                 }
 
-                if ($index === 0) {
-                    $message_sent = true;
-                }
-            }
-
-            if (empty($images) || ($image_send_failed && !$message_sent)) {
-                return $this->send_text_message($settings['bot_token'], array(
-                    'chat_id' => $settings['channel'],
-                    'text' => $text,
-                    'disable_notification' => (bool) $settings['disable_notification'],
-                    'inline_keypad' => $this->build_buy_keypad($product),
+                $this->add_log('info', 'Image sent to Rubika.', array(
+                    'product_id' => $product_id,
+                    'attachment_id' => $attachment_id,
+                    'method' => $result['method'] ?? 'unknown',
                 ));
             }
 
@@ -805,6 +804,7 @@ if (!class_exists('WCRB_Plugin')) {
             foreach ($methods as $method) {
                 $result = $this->rubika_api_request($token, $method, $payload);
                 if ($result['success']) {
+                    $result['method'] = $method;
                     return $result;
                 }
                 if (strpos($result['message'], 'INVALID_INPUT') !== false) {
@@ -812,6 +812,7 @@ if (!class_exists('WCRB_Plugin')) {
                     unset($stripped_payload['inline_keypad'], $stripped_payload['disable_notification']);
                     $retry = $this->rubika_api_request($token, $method, $stripped_payload);
                     if ($retry['success']) {
+                        $retry['method'] = $method;
                         return $retry;
                     }
                 }
@@ -902,27 +903,37 @@ if (!class_exists('WCRB_Plugin')) {
             return $ids;
         }
 
-        private function upload_image_to_rubika($attachment_id, $token) {
+        private function upload_image_to_rubika($attachment_id, $token, $product_id = 0) {
             $original_path = get_attached_file($attachment_id);
             if (!$original_path || !file_exists($original_path)) {
                 return array('success' => false, 'message' => 'Image file missing');
             }
 
-            $prepared = $this->prepare_image_for_rubika_upload($original_path);
-            $path = $prepared['path'];
-            $cleanup_temp_file = !empty($prepared['temporary']);
-            if ($cleanup_temp_file) {
-                $this->add_log('info', 'Converted source image to JPG for Rubika upload.', array('source' => basename($original_path)));
+            $prepared = $this->prepare_image_for_rubika_upload($original_path, $attachment_id, $product_id);
+            if (!$prepared['success']) {
+                $this->cleanup_prepared_image($prepared, $attachment_id, $product_id);
+                return array('success' => false, 'message' => $prepared['message']);
             }
+
+            $path = $prepared['path'];
+            $this->add_log('info', 'Rubika image upload started.', array(
+                'product_id' => $product_id,
+                'attachment_id' => $attachment_id,
+                'file' => basename($path),
+                'size' => filesize($path),
+            ));
 
             $request = $this->rubika_api_request($token, 'requestSendFile', array('type' => 'Image'));
             if (!$request['success']) {
                 $request = $this->rubika_api_request($token, 'requestSendFile', array('type' => 'File'));
             }
             if (!$request['success']) {
-                if ($cleanup_temp_file && file_exists($path)) {
-                    @unlink($path);
-                }
+                $this->cleanup_prepared_image($prepared, $attachment_id, $product_id);
+                $this->add_log('error', 'Rubika upload URL request failed.', array(
+                    'product_id' => $product_id,
+                    'attachment_id' => $attachment_id,
+                    'reason' => $request['message'],
+                ));
                 return $request;
             }
 
@@ -934,9 +945,7 @@ if (!class_exists('WCRB_Plugin')) {
             }
 
             if (empty($upload_url)) {
-                if ($cleanup_temp_file && file_exists($path)) {
-                    @unlink($path);
-                }
+                $this->cleanup_prepared_image($prepared, $attachment_id, $product_id);
                 return array('success' => false, 'message' => 'Could not get upload URL');
             }
 
@@ -949,7 +958,7 @@ if (!class_exists('WCRB_Plugin')) {
                     CURLOPT_RETURNTRANSFER => true,
                     CURLOPT_TIMEOUT => 60,
                     CURLOPT_POSTFIELDS => array(
-                        'file' => new CURLFile($path),
+                        'file' => new CURLFile($path, 'image/jpeg', basename($path)),
                     ),
                 ));
                 $curl_response = curl_exec($curl);
@@ -960,7 +969,7 @@ if (!class_exists('WCRB_Plugin')) {
             }
 
             if ($raw_upload_body === '') {
-                $file_part = function_exists('curl_file_create') ? curl_file_create($path) : '@' . $path;
+                $file_part = function_exists('curl_file_create') ? curl_file_create($path, 'image/jpeg', basename($path)) : '@' . $path;
                 $response = wp_remote_post($upload_url, array(
                     'timeout' => 60,
                     'body' => array(
@@ -969,9 +978,12 @@ if (!class_exists('WCRB_Plugin')) {
                 ));
 
                 if (is_wp_error($response)) {
-                    if ($cleanup_temp_file && file_exists($path)) {
-                        @unlink($path);
-                    }
+                    $this->cleanup_prepared_image($prepared, $attachment_id, $product_id);
+                    $this->add_log('error', 'Rubika multipart image upload failed.', array(
+                        'product_id' => $product_id,
+                        'attachment_id' => $attachment_id,
+                        'reason' => $response->get_error_message(),
+                    ));
                     return array('success' => false, 'message' => $response->get_error_message());
                 }
 
@@ -982,11 +994,10 @@ if (!class_exists('WCRB_Plugin')) {
             $file_id = $this->extract_file_id_from_upload_response($json);
 
             if (empty($file_id)) {
-                // Fallback: some upload endpoints expect raw binary body.
                 $fallback_response = wp_remote_post($upload_url, array(
                     'timeout' => 60,
                     'headers' => array(
-                        'Content-Type' => wp_check_filetype($path)['type'] ?: 'application/octet-stream',
+                        'Content-Type' => 'image/jpeg',
                     ),
                     'body' => file_get_contents($path),
                 ));
@@ -1003,55 +1014,168 @@ if (!class_exists('WCRB_Plugin')) {
 
             if (empty($file_id)) {
                 $body_for_log = is_string($raw_upload_body) ? mb_substr($raw_upload_body, 0, 400) : '';
-                if ($cleanup_temp_file && file_exists($path)) {
-                    @unlink($path);
-                }
+                $this->cleanup_prepared_image($prepared, $attachment_id, $product_id);
+                $this->add_log('error', 'Rubika image upload returned no file_id.', array(
+                    'product_id' => $product_id,
+                    'attachment_id' => $attachment_id,
+                    'response' => $body_for_log,
+                ));
                 return array('success' => false, 'message' => 'No file_id in upload response: ' . $body_for_log);
             }
 
-            if ($cleanup_temp_file && file_exists($path)) {
-                @unlink($path);
-            }
+            $this->cleanup_prepared_image($prepared, $attachment_id, $product_id);
+            $this->add_log('info', 'Rubika image upload completed.', array(
+                'product_id' => $product_id,
+                'attachment_id' => $attachment_id,
+            ));
 
             return array('success' => true, 'file_id' => $file_id);
         }
 
-        private function prepare_image_for_rubika_upload($path) {
+        private function prepare_image_for_rubika_upload($path, $attachment_id = 0, $product_id = 0) {
             $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-            if (!in_array($extension, array('webp', 'avif'), true)) {
-                return array('path' => $path, 'temporary' => false);
+            $supported_without_conversion = array('jpg', 'jpeg');
+            $needs_conversion = !in_array($extension, $supported_without_conversion, true);
+
+            if (!$needs_conversion) {
+                $validation = $this->wait_for_valid_image_file($path, true);
+                if (!$validation['success']) {
+                    $this->add_log('error', 'Original image validation failed.', array(
+                        'product_id' => $product_id,
+                        'attachment_id' => $attachment_id,
+                        'file' => basename($path),
+                        'reason' => $validation['message'],
+                    ));
+                    return array('success' => false, 'message' => $validation['message'], 'path' => $path, 'temporary' => false, 'generated_files' => array());
+                }
+
+                $this->add_log('info', 'Original JPG image validated for Rubika upload.', array(
+                    'product_id' => $product_id,
+                    'attachment_id' => $attachment_id,
+                    'file' => basename($path),
+                ));
+                return array('success' => true, 'path' => $path, 'temporary' => false, 'generated_files' => array(), 'message' => 'Original image ready');
             }
 
-            if (!function_exists('imagejpeg')) {
-                return array('path' => $path, 'temporary' => false);
+            $this->add_log('info', 'Image conversion started for Rubika upload.', array(
+                'product_id' => $product_id,
+                'attachment_id' => $attachment_id,
+                'source' => basename($path),
+                'extension' => $extension,
+            ));
+
+            $generated_files = array();
+            $final_jpg = trailingslashit(get_temp_dir()) . 'wcrb-rubika-' . wp_generate_uuid4() . '.jpg';
+            $generated_files[] = $final_jpg;
+            $converted = false;
+
+            if (function_exists('wp_get_image_editor')) {
+                $editor = wp_get_image_editor($path);
+                if (!is_wp_error($editor)) {
+                    $saved = $editor->save($final_jpg, 'image/jpeg');
+                    $converted = !is_wp_error($saved) && !empty($saved['path']) && file_exists($saved['path']);
+                    if ($converted && $saved['path'] !== $final_jpg) {
+                        $final_jpg = $saved['path'];
+                        $generated_files[] = $final_jpg;
+                    }
+                }
             }
 
-            $image_resource = false;
-            if ($extension === 'webp' && function_exists('imagecreatefromwebp')) {
-                $image_resource = @imagecreatefromwebp($path);
-            }
-            if ($extension === 'avif' && function_exists('imagecreatefromavif')) {
-                $image_resource = @imagecreatefromavif($path);
+            if (!$converted && function_exists('imagejpeg')) {
+                $image_resource = false;
+                if ($extension === 'webp' && function_exists('imagecreatefromwebp')) {
+                    $image_resource = @imagecreatefromwebp($path);
+                } elseif ($extension === 'avif' && function_exists('imagecreatefromavif')) {
+                    $image_resource = @imagecreatefromavif($path);
+                } else {
+                    $raw_contents = @file_get_contents($path);
+                    if ($raw_contents !== false && function_exists('imagecreatefromstring')) {
+                        $image_resource = @imagecreatefromstring($raw_contents);
+                    }
+                }
+
+                if ($image_resource) {
+                    $converted = @imagejpeg($image_resource, $final_jpg, 90);
+                    imagedestroy($image_resource);
+                }
             }
 
-            if (!$image_resource) {
-                return array('path' => $path, 'temporary' => false);
+            if (!$converted) {
+                $prepared = array('path' => $final_jpg, 'temporary' => true, 'generated_files' => $generated_files);
+                $this->cleanup_prepared_image($prepared, $attachment_id, $product_id);
+                $this->add_log('error', 'Image conversion failed for Rubika upload.', array(
+                    'product_id' => $product_id,
+                    'attachment_id' => $attachment_id,
+                    'source' => basename($path),
+                ));
+                return array('success' => false, 'message' => 'Image conversion failed', 'path' => $final_jpg, 'temporary' => true, 'generated_files' => $generated_files);
             }
 
-            $temp_jpg = wp_tempnam('wcrb-webp-convert');
-            if (!$temp_jpg) {
-                imagedestroy($image_resource);
-                return array('path' => $path, 'temporary' => false);
+            clearstatcache(true, $final_jpg);
+            $validation = $this->wait_for_valid_image_file($final_jpg, true);
+            if (!$validation['success']) {
+                $prepared = array('path' => $final_jpg, 'temporary' => true, 'generated_files' => $generated_files);
+                $this->cleanup_prepared_image($prepared, $attachment_id, $product_id);
+                $this->add_log('error', 'Converted JPG validation failed.', array(
+                    'product_id' => $product_id,
+                    'attachment_id' => $attachment_id,
+                    'file' => basename($final_jpg),
+                    'reason' => $validation['message'],
+                ));
+                return array('success' => false, 'message' => $validation['message'], 'path' => $final_jpg, 'temporary' => true, 'generated_files' => $generated_files);
             }
 
-            $result = @imagejpeg($image_resource, $temp_jpg, 90);
-            imagedestroy($image_resource);
-            if (!$result || !file_exists($temp_jpg)) {
-                @unlink($temp_jpg);
-                return array('path' => $path, 'temporary' => false);
+            $this->add_log('info', 'Image conversion completed and validated for Rubika upload.', array(
+                'product_id' => $product_id,
+                'attachment_id' => $attachment_id,
+                'source' => basename($path),
+                'file' => basename($final_jpg),
+                'size' => filesize($final_jpg),
+            ));
+
+            return array('success' => true, 'path' => $final_jpg, 'temporary' => true, 'generated_files' => $generated_files, 'message' => 'Converted image ready');
+        }
+
+        private function wait_for_valid_image_file($path, $require_jpeg = true) {
+            for ($attempt = 1; $attempt <= 5; $attempt++) {
+                clearstatcache(true, $path);
+                if (file_exists($path) && is_readable($path) && filesize($path) > 0) {
+                    $image_info = @getimagesize($path);
+                    if (is_array($image_info) && !empty($image_info['mime'])) {
+                        if (!$require_jpeg || $image_info['mime'] === 'image/jpeg') {
+                            return array('success' => true, 'message' => 'Image file is valid');
+                        }
+                        return array('success' => false, 'message' => 'Validated image is not JPEG: ' . $image_info['mime']);
+                    }
+                }
+                usleep(250000);
             }
 
-            return array('path' => $temp_jpg, 'temporary' => true);
+            return array('success' => false, 'message' => 'Image file was not ready or valid after retry checks');
+        }
+
+        private function cleanup_prepared_image($prepared, $attachment_id = 0, $product_id = 0) {
+            if (empty($prepared['temporary'])) {
+                return;
+            }
+
+            $files = array();
+            if (!empty($prepared['generated_files']) && is_array($prepared['generated_files'])) {
+                $files = $prepared['generated_files'];
+            } elseif (!empty($prepared['path'])) {
+                $files[] = $prepared['path'];
+            }
+
+            foreach (array_unique(array_filter($files)) as $file) {
+                if (file_exists($file)) {
+                    $deleted = @unlink($file);
+                    $this->add_log($deleted ? 'info' : 'warning', 'Temporary Rubika image cleanup ' . ($deleted ? 'completed.' : 'failed.'), array(
+                        'product_id' => $product_id,
+                        'attachment_id' => $attachment_id,
+                        'file' => basename($file),
+                    ));
+                }
+            }
         }
 
         private function extract_file_id_from_upload_response($json) {
