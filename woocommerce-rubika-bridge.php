@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Social Bridge
  * Description: Lightweight WooCommerce social publisher for Rubika and Telegram relay with queue, scheduling, and per-product controls.
- * Version: 1.3.1
+ * Version: 1.4.0
  * Author: Codex
  * Requires Plugins: woocommerce
  */
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 
 if (!class_exists('WCRB_Plugin')) {
     class WCRB_Plugin {
-        const VERSION = '1.3.1';
+        const VERSION = '1.4.0';
         const VERSION_OPTION = 'wcrb_plugin_version';
         const OPTION_KEY = 'wcrb_settings';
         const LAST_SENT_OPTION = 'wcrb_last_sent_at';
@@ -47,6 +47,7 @@ if (!class_exists('WCRB_Plugin')) {
             add_action('admin_post_wcrb_clear_network_failed', array($this, 'handle_clear_network_failed'));
             add_action('admin_post_wcrb_clear_network_queue', array($this, 'handle_clear_network_queue'));
             add_action('admin_post_wcrb_requeue_network_failed', array($this, 'handle_requeue_network_failed'));
+            add_action('admin_post_wcrb_enqueue_unsynced_network', array($this, 'handle_enqueue_unsynced_network'));
             add_action('transition_post_status', array($this, 'enqueue_newly_published_product'), 10, 3);
 
             add_action('admin_bar_menu', array($this, 'admin_bar_publish_button'), 100);
@@ -140,6 +141,7 @@ if (!class_exists('WCRB_Plugin')) {
                 'image_count' => 1,
                 'excluded_images' => '',
                 'interval_minutes' => 15,
+                'scheduled_sending_enabled' => 1,
                 'send_window_start' => '00:00',
                 'send_window_end' => '23:59',
                 'disable_notification' => 0,
@@ -364,6 +366,7 @@ if (!class_exists('WCRB_Plugin')) {
                 'prevent_duplicates' => 'general',
                 'allow_manual_force_resend' => 'general',
                 'enable_logs' => 'general',
+                'scheduled_sending_enabled' => 'general',
                 'rubika_enabled' => 'rubika',
                 'disable_notification' => 'rubika',
                 'telegram_enabled' => 'telegram',
@@ -415,7 +418,6 @@ if (!class_exists('WCRB_Plugin')) {
                 'general' => __('General', 'wcrb'),
                 'rubika' => __('Rubika', 'wcrb'),
                 'telegram' => __('Telegram', 'wcrb'),
-                'queues' => __('Queues', 'wcrb'),
                 'logs' => __('Logs / Diagnostics', 'wcrb'),
             );
             $active_tab = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : 'general';
@@ -471,7 +473,8 @@ if (!class_exists('WCRB_Plugin')) {
                             <tr><th scope="row"><?php esc_html_e('Queued item becomes out of stock', 'wcrb'); ?></th><td><select name="<?php echo esc_attr(self::OPTION_KEY); ?>[queued_out_of_stock_behavior]"><option value="skipped" <?php selected($settings['queued_out_of_stock_behavior'], 'skipped'); ?>><?php esc_html_e('Mark as skipped', 'wcrb'); ?></option><option value="failed" <?php selected($settings['queued_out_of_stock_behavior'], 'failed'); ?>><?php esc_html_e('Mark as failed', 'wcrb'); ?></option></select><p class="description"><?php esc_html_e('The item is not published and the reason is logged.', 'wcrb'); ?></p></td></tr>
                             <tr><th scope="row"><?php esc_html_e('Publish interval', 'wcrb'); ?></th><td><input type="number" min="1" name="<?php echo esc_attr(self::OPTION_KEY); ?>[interval_minutes]" value="<?php echo esc_attr($settings['interval_minutes']); ?>"> <?php esc_html_e('minutes between queue sends', 'wcrb'); ?></td></tr>
                             <tr><th scope="row"><?php esc_html_e('Retry policy', 'wcrb'); ?></th><td><input type="number" min="1" max="20" name="<?php echo esc_attr(self::OPTION_KEY); ?>[max_retry_attempts]" value="<?php echo esc_attr($settings['max_retry_attempts']); ?>"> <?php esc_html_e('max attempts', 'wcrb'); ?> &nbsp; <input type="number" min="1" max="1440" name="<?php echo esc_attr(self::OPTION_KEY); ?>[retry_delay_minutes]" value="<?php echo esc_attr($settings['retry_delay_minutes']); ?>"> <?php esc_html_e('retry delay minutes', 'wcrb'); ?></td></tr>
-                            <tr><th scope="row"><?php esc_html_e('Daily publishing window', 'wcrb'); ?></th><td><input type="time" name="<?php echo esc_attr(self::OPTION_KEY); ?>[send_window_start]" value="<?php echo esc_attr($settings['send_window_start']); ?>"> - <input type="time" name="<?php echo esc_attr(self::OPTION_KEY); ?>[send_window_end]" value="<?php echo esc_attr($settings['send_window_end']); ?>"></td></tr>
+                            <tr><th scope="row"><?php esc_html_e('Scheduled sending', 'wcrb'); ?></th><td><label><input type="checkbox" name="<?php echo esc_attr(self::OPTION_KEY); ?>[scheduled_sending_enabled]" value="1" <?php checked((int) $settings['scheduled_sending_enabled'], 1); ?>> <?php esc_html_e('Only process automatic queues during the allowed sending window for all messengers', 'wcrb'); ?></label><p class="description"><?php echo esc_html(sprintf(__('Current WordPress time: %s. Manual direct product sends bypass the queue schedule; automatic queue processing respects it.', 'wcrb'), current_time('Y-m-d H:i'))); ?></p></td></tr>
+                            <tr><th scope="row"><?php esc_html_e('Allowed sending window', 'wcrb'); ?></th><td><input type="time" name="<?php echo esc_attr(self::OPTION_KEY); ?>[send_window_start]" value="<?php echo esc_attr($settings['send_window_start']); ?>"> - <input type="time" name="<?php echo esc_attr(self::OPTION_KEY); ?>[send_window_end]" value="<?php echo esc_attr($settings['send_window_end']); ?>"><p class="description"><?php esc_html_e('Applies to Rubika, Telegram, and future network queues when scheduled sending is enabled.', 'wcrb'); ?></p></td></tr>
                             <tr><th scope="row"><?php esc_html_e('Duplicate-send prevention', 'wcrb'); ?></th><td><label><input type="checkbox" name="<?php echo esc_attr(self::OPTION_KEY); ?>[prevent_duplicates]" value="1" <?php checked((int) $settings['prevent_duplicates'], 1); ?>> <?php esc_html_e('Prevent automatic resend when the payload hash was already sent', 'wcrb'); ?></label><br><label><input type="checkbox" name="<?php echo esc_attr(self::OPTION_KEY); ?>[allow_manual_force_resend]" value="1" <?php checked((int) $settings['allow_manual_force_resend'], 1); ?>> <?php esc_html_e('Allow manual actions to force resend changed or duplicate payloads', 'wcrb'); ?></label></td></tr>
                             <tr><th scope="row"><?php esc_html_e('Logging', 'wcrb'); ?></th><td><label><input type="checkbox" name="<?php echo esc_attr(self::OPTION_KEY); ?>[enable_logs]" value="1" <?php checked((int) $settings['enable_logs'], 1); ?>> <?php esc_html_e('Enable safe diagnostics logs', 'wcrb'); ?></label><br><input type="number" min="50" max="5000" name="<?php echo esc_attr(self::OPTION_KEY); ?>[log_retention_limit]" value="<?php echo esc_attr($settings['log_retention_limit']); ?>"> <?php esc_html_e('log lines to retain', 'wcrb'); ?></td></tr>
                         </table>
@@ -496,6 +499,7 @@ if (!class_exists('WCRB_Plugin')) {
                         <?php submit_button(); ?>
                     </form>
                     <p><?php $this->render_action_button('wcrb_send_test_message', 'wcrb_send_test_message', __('Send Rubika Hello test', 'wcrb'), array(), 'secondary'); ?></p>
+                    <?php $this->render_network_queue_card('rubika', $network_queue_stats['rubika']); ?>
                 <?php elseif ($active_tab === 'telegram') : ?>
                     <form method="post" action="options.php" class="wcrb-panel">
                         <?php settings_fields('wcrb_settings_group'); ?>
@@ -515,25 +519,7 @@ if (!class_exists('WCRB_Plugin')) {
                         <?php submit_button(); ?>
                     </form>
                     <p><?php $this->render_action_button('wcrb_test_telegram_relay', 'wcrb_test_telegram_relay', __('Test Telegram relay', 'wcrb'), array(), 'secondary'); ?></p>
-                <?php elseif ($active_tab === 'queues') : ?>
-                    <div class="wcrb-panel">
-                        <h2><?php esc_html_e('Network queues', 'wcrb'); ?></h2>
-                        <p><?php echo esc_html(sprintf(__('All queues — Pending: %1$d | Processing: %2$d | Sent: %3$d | Failed: %4$d | Skipped: %5$d', 'wcrb'), $queue_stats['pending'], $queue_stats['processing'], $queue_stats['sent'], $queue_stats['failed'], $queue_stats['skipped'])); ?></p>
-                        <form style="display:inline-block;margin:0 8px 12px 0" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                            <?php wp_nonce_field('wcrb_enqueue_all'); ?><input type="hidden" name="action" value="wcrb_enqueue_all"><?php submit_button(__('Queue all published products', 'wcrb'), 'secondary', 'submit', false); ?>
-                        </form>
-                        <?php foreach (array('rubika' => __('Rubika queue', 'wcrb'), 'telegram' => __('Telegram queue', 'wcrb')) as $network => $label) : $stats = $network_queue_stats[$network]; ?>
-                            <div class="wcrb-card wcrb-network-card">
-                                <h3><?php echo esc_html($label); ?> <?php echo $this->status_badge($this->is_network_enabled($network), $this->is_network_enabled($network) ? '' : __('Disabled', 'wcrb')); ?></h3>
-                                <p><?php echo esc_html(sprintf(__('Pending: %1$d | Processing: %2$d | Sent: %3$d | Failed: %4$d | Skipped: %5$d', 'wcrb'), $stats['pending'], $stats['processing'], $stats['sent'], $stats['failed'], $stats['skipped'])); ?></p>
-                                <?php $this->render_action_button('wcrb_process_network_queue', 'wcrb_process_network_queue_' . $network, __('Process now', 'wcrb'), array('network' => $network), 'secondary'); ?>
-                                <?php $this->render_action_button('wcrb_clear_network_failed', 'wcrb_clear_network_failed_' . $network, __('Clear failed/skipped', 'wcrb'), array('network' => $network), 'secondary', __('Clear failed and skipped items for this network?', 'wcrb')); ?>
-                                <?php $this->render_action_button('wcrb_requeue_network_failed', 'wcrb_requeue_network_failed_' . $network, __('Requeue failed', 'wcrb'), array('network' => $network), 'secondary'); ?>
-                                <?php $this->render_action_button('wcrb_clear_network_queue', 'wcrb_clear_network_queue_' . $network, __('Clear this network queue', 'wcrb'), array('network' => $network), 'delete', __('Clear all queue items for this network?', 'wcrb')); ?>
-                            </div>
-                        <?php endforeach; ?>
-                        <p><?php $this->render_action_button('wcrb_clear_queue', 'wcrb_clear_queue', __('Clear all queues', 'wcrb'), array(), 'delete', __('Are you sure you want to clear all queues?', 'wcrb')); ?> <?php $this->render_action_button('wcrb_reset_sync_records', 'wcrb_reset_sync_records', __('Reset all sent status records', 'wcrb'), array(), 'secondary', __('Reset synced/unsynced product records for all networks?', 'wcrb')); ?></p>
-                    </div>
+                    <?php $this->render_network_queue_card('telegram', $network_queue_stats['telegram']); ?>
                 <?php else : ?>
                     <div class="wcrb-panel">
                         <h2><?php esc_html_e('Logs / Diagnostics', 'wcrb'); ?></h2>
@@ -571,6 +557,25 @@ if (!class_exists('WCRB_Plugin')) {
                 <?php endforeach; ?>
                 <?php submit_button($label, $button_type, 'submit', false); ?>
             </form>
+            <?php
+        }
+
+
+        private function render_network_queue_card($network, $stats) {
+            $network = $this->normalize_network($network);
+            $label = $network === 'telegram' ? __('Telegram queue', 'wcrb') : __('Rubika queue', 'wcrb');
+            $unsynced_label = $network === 'telegram' ? __('Add unsynced products to Telegram pending queue', 'wcrb') : __('Add unsynced products to Rubika pending queue', 'wcrb');
+            ?>
+            <div class="wcrb-card wcrb-network-card">
+                <h3><?php echo esc_html($label); ?> <?php echo $this->status_badge($this->is_network_enabled($network), $this->is_network_enabled($network) ? '' : __('Disabled', 'wcrb')); ?></h3>
+                <p><?php echo esc_html(sprintf(__('Pending: %1$d | Processing: %2$d | Sent: %3$d | Failed: %4$d | Skipped: %5$d', 'wcrb'), $stats['pending'], $stats['processing'], $stats['sent'], $stats['failed'], $stats['skipped'])); ?></p>
+                <p class="description"><?php esc_html_e('These actions affect only this messenger queue. Manual processing intentionally bypasses the schedule; automatic processing respects the global schedule.', 'wcrb'); ?></p>
+                <?php $this->render_action_button('wcrb_process_network_queue', 'wcrb_process_network_queue_' . $network, __('Process this queue now', 'wcrb'), array('network' => $network), 'secondary'); ?>
+                <?php $this->render_action_button('wcrb_enqueue_unsynced_network', 'wcrb_enqueue_unsynced_network_' . $network, $unsynced_label, array('network' => $network), 'secondary'); ?>
+                <?php $this->render_action_button('wcrb_clear_network_failed', 'wcrb_clear_network_failed_' . $network, __('Clear failed/skipped', 'wcrb'), array('network' => $network), 'secondary', __('Clear failed and skipped items for this network?', 'wcrb')); ?>
+                <?php $this->render_action_button('wcrb_requeue_network_failed', 'wcrb_requeue_network_failed_' . $network, __('Requeue failed', 'wcrb'), array('network' => $network), 'secondary'); ?>
+                <?php $this->render_action_button('wcrb_clear_network_queue', 'wcrb_clear_network_queue_' . $network, __('Clear this network queue', 'wcrb'), array('network' => $network), 'delete', __('Clear all queue items for this network?', 'wcrb')); ?>
+            </div>
             <?php
         }
 
@@ -791,7 +796,7 @@ if (!class_exists('WCRB_Plugin')) {
             }
 
             $this->process_queue(true, $network);
-            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'tab' => 'queues', 'wcrb_notice' => 'run_queue', 'network' => $network), admin_url('admin.php')));
+            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'tab' => $network, 'wcrb_notice' => 'run_queue', 'network' => $network), admin_url('admin.php')));
             exit;
         }
 
@@ -805,7 +810,7 @@ if (!class_exists('WCRB_Plugin')) {
             $table = $wpdb->prefix . self::TABLE_SUFFIX;
             $deleted = $wpdb->query($wpdb->prepare("DELETE FROM {$table} WHERE network = %s AND status IN ('failed','skipped')", $network));
             $this->add_log('warning', 'Failed/skipped queue items cleared by admin.', array('network' => $network, 'deleted' => (int) $deleted, 'action' => 'clear_failed_queue'));
-            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'tab' => 'queues', 'wcrb_notice' => 'clear_failed', 'network' => $network), admin_url('admin.php')));
+            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'tab' => $network, 'wcrb_notice' => 'clear_failed', 'network' => $network), admin_url('admin.php')));
             exit;
         }
 
@@ -819,7 +824,7 @@ if (!class_exists('WCRB_Plugin')) {
             $table = $wpdb->prefix . self::TABLE_SUFFIX;
             $deleted = $wpdb->query($wpdb->prepare("DELETE FROM {$table} WHERE network = %s", $network));
             $this->add_log('warning', 'Network queue cleared by admin.', array('network' => $network, 'deleted' => (int) $deleted, 'action' => 'clear_network_queue'));
-            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'tab' => 'queues', 'wcrb_notice' => 'clear_queue', 'network' => $network), admin_url('admin.php')));
+            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'tab' => $network, 'wcrb_notice' => 'clear_queue', 'network' => $network), admin_url('admin.php')));
             exit;
         }
 
@@ -833,7 +838,20 @@ if (!class_exists('WCRB_Plugin')) {
             $table = $wpdb->prefix . self::TABLE_SUFFIX;
             $updated = $wpdb->query($wpdb->prepare("UPDATE {$table} SET status = 'pending', attempts = 0, error_message = NULL, scheduled_at = UTC_TIMESTAMP() WHERE network = %s AND status = 'failed'", $network));
             $this->add_log('info', 'Failed queue items requeued by admin.', array('network' => $network, 'updated' => (int) $updated, 'action' => 'requeue_failed'));
-            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'tab' => 'queues', 'wcrb_notice' => 'requeue_failed', 'network' => $network), admin_url('admin.php')));
+            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'tab' => $network, 'wcrb_notice' => 'requeue_failed', 'network' => $network), admin_url('admin.php')));
+            exit;
+        }
+
+
+        public function handle_enqueue_unsynced_network() {
+            $network = isset($_POST['network']) ? $this->normalize_network(sanitize_key(wp_unslash($_POST['network']))) : 'rubika';
+            if (!current_user_can('manage_woocommerce') || !check_admin_referer('wcrb_enqueue_unsynced_network_' . $network)) {
+                wp_die(esc_html__('Not allowed.', 'wcrb'));
+            }
+
+            $result = $this->enqueue_unsynced_products_for_network($network);
+            $this->add_log('info', 'Unsynced products scanned for network queue.', array_merge(array('network' => $network, 'action' => 'enqueue_unsynced'), $result));
+            wp_safe_redirect(add_query_arg(array_merge(array('page' => 'wcrb-settings', 'tab' => $network, 'wcrb_notice' => 'unsynced_network', 'network' => $network), $result), admin_url('admin.php')));
             exit;
         }
 
@@ -1029,6 +1047,78 @@ if (!class_exists('WCRB_Plugin')) {
             return !empty($settings['bot_token']) && !empty($settings['channel']);
         }
 
+
+        private function enqueue_unsynced_products_for_network($network) {
+            $network = $this->normalize_network($network);
+            $result = array(
+                'scanned' => 0,
+                'added' => 0,
+                'skipped_synced' => 0,
+                'skipped_out_of_stock' => 0,
+                'skipped_pending' => 0,
+                'skipped_invalid' => 0,
+                'errors' => 0,
+            );
+
+            $products = wc_get_products(array(
+                'status' => 'publish',
+                'limit' => -1,
+                'orderby' => 'title',
+                'order' => 'ASC',
+                'return' => 'objects',
+            ));
+
+            foreach ($products as $product) {
+                $result['scanned']++;
+                if (!$product || !is_callable(array($product, 'get_id'))) {
+                    $result['skipped_invalid']++;
+                    continue;
+                }
+
+                $product_id = (int) $product->get_id();
+                $payload_hash = $this->build_payload_hash($product, $network);
+                if ($this->was_payload_sent($product_id, $network, $payload_hash)) {
+                    $result['skipped_synced']++;
+                    continue;
+                }
+
+                $can_publish = $this->can_publish_product($product_id, $network, false);
+                if (!$can_publish['allowed']) {
+                    if (strpos($can_publish['message'], 'Out-of-stock') !== false) {
+                        $result['skipped_out_of_stock']++;
+                    } else {
+                        $result['skipped_invalid']++;
+                    }
+                    $this->add_log('warning', 'Unsynced product not queued.', array('product_id' => $product_id, 'network' => $network, 'action' => 'enqueue_unsynced', 'status' => 'skipped', 'message' => $can_publish['message']));
+                    continue;
+                }
+
+                if ($this->queue_has_pending_payload($product_id, $network, $payload_hash)) {
+                    $result['skipped_pending']++;
+                    continue;
+                }
+
+                if ($this->enqueue_product($product_id, $network, true)) {
+                    $result['added']++;
+                } else {
+                    $result['errors']++;
+                }
+            }
+
+            return $result;
+        }
+
+        private function queue_has_pending_payload($product_id, $network, $payload_hash) {
+            global $wpdb;
+            $table = $wpdb->prefix . self::TABLE_SUFFIX;
+            return (bool) $wpdb->get_var($wpdb->prepare(
+                "SELECT id FROM {$table} WHERE product_id = %d AND network = %s AND payload_hash = %s AND status IN ('pending','processing') LIMIT 1",
+                $product_id,
+                $this->normalize_network($network),
+                $payload_hash
+            ));
+        }
+
         private function enqueue_product($product_id, $network = 'rubika', $force = false) {
             $network = $this->normalize_network($network);
             $can_publish = $this->can_publish_product($product_id, $network, false);
@@ -1053,9 +1143,10 @@ if (!class_exists('WCRB_Plugin')) {
             $table = $wpdb->prefix . self::TABLE_SUFFIX;
 
             $already = $wpdb->get_var($wpdb->prepare(
-                "SELECT id FROM {$table} WHERE product_id = %d AND network = %s AND status IN ('pending','processing') LIMIT 1",
+                "SELECT id FROM {$table} WHERE product_id = %d AND network = %s AND payload_hash = %s AND status IN ('pending','processing') LIMIT 1",
                 $product_id,
-                $network
+                $network,
+                $payload_hash
             ));
 
             if ($already) {
@@ -1184,6 +1275,10 @@ if (!class_exists('WCRB_Plugin')) {
 
         private function is_in_send_window() {
             $settings = $this->get_settings();
+            if (empty($settings['scheduled_sending_enabled'])) {
+                return true;
+            }
+
             $start = $settings['send_window_start'];
             $end = $settings['send_window_end'];
 
@@ -2033,6 +2128,23 @@ if (!class_exists('WCRB_Plugin')) {
             if ($_GET['wcrb_notice'] === 'requeue_failed') {
                 echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__('Failed queue items were requeued for the selected network.', 'wcrb') . '</p></div>';
             }
+
+            if ($_GET['wcrb_notice'] === 'unsynced_network') {
+                $network = isset($_GET['network']) ? sanitize_key(wp_unslash($_GET['network'])) : '';
+                $message = sprintf(
+                    __('%1$s unsynced scan completed. Scanned: %2$d, added: %3$d, already synced: %4$d, out of stock: %5$d, already pending: %6$d, invalid/ineligible: %7$d, errors: %8$d.', 'wcrb'),
+                    ucfirst($network),
+                    isset($_GET['scanned']) ? absint($_GET['scanned']) : 0,
+                    isset($_GET['added']) ? absint($_GET['added']) : 0,
+                    isset($_GET['skipped_synced']) ? absint($_GET['skipped_synced']) : 0,
+                    isset($_GET['skipped_out_of_stock']) ? absint($_GET['skipped_out_of_stock']) : 0,
+                    isset($_GET['skipped_pending']) ? absint($_GET['skipped_pending']) : 0,
+                    isset($_GET['skipped_invalid']) ? absint($_GET['skipped_invalid']) : 0,
+                    isset($_GET['errors']) ? absint($_GET['errors']) : 0
+                );
+                echo '<div class="notice notice-success is-dismissible"><p>' . esc_html($message) . '</p></div>';
+            }
+
         }
 
         private function normalize_network($network) {

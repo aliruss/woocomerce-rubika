@@ -6,7 +6,7 @@
 
 ## قابلیت‌ها
 - ساختار چندشبکه‌ای سبک برای Rubika، Telegram و شبکه‌های آینده.
-- تب‌های جداگانه تنظیمات: General، Rubika، Telegram، Queues و Logs / Diagnostics.
+- تب‌های جداگانه تنظیمات: General، Rubika، Telegram و Logs / Diagnostics؛ مدیریت صف هر پیام‌رسان داخل تب همان پیام‌رسان قرار دارد.
 - تنظیمات مستقل Rubika: توکن بات، کانال، URL سایت، قالب پیام، تعداد تصویر، تصاویر مستثنی و تست پیام.
 - تنظیمات مستقل Telegram: Relay URL، Relay API Key، HMAC اختیاری، تعداد تصویر، قالب پیام، parse mode، ارسال آلبومی و تست اتصال relay.
 - قالب پیام قابل شخصی‌سازی با `{title}`، `{short_description}`، `{social_text}`، `{price}` و `{url}`.
@@ -15,7 +15,7 @@
 - انتخاب تعداد تصویر ارسالی و انتخاب تصاویر مستثنی از **رسانه وردپرس** (Multi Select).
 - پشتیبانی از تبدیل خودکار WEBP/AVIF و فرمت‌های ناسازگار به JPG نهایی و معتبر قبل از ارسال Rubika.
 - صف انتشار network-aware با وضعیت جدا برای Rubika و Telegram.
-- کنترل جداگانه صف‌ها: اجرای دستی هر شبکه، پاک‌سازی failed/skipped هر شبکه، پاک‌سازی کامل هر شبکه و requeue failed.
+- کنترل جداگانه صف‌ها داخل تب هر پیام‌رسان: اجرای دستی همان شبکه، افزودن محصولات سینک‌نشده به صف pending همان شبکه، پاک‌سازی failed/skipped، پاک‌سازی کامل و requeue failed.
 - بازه زمانی مجاز انتشار روزانه، فاصله ارسال، حداکثر تلاش مجدد و تأخیر تلاش مجدد.
 - جلوگیری از ارسال تکراری با payload hash و امکان forced resend از اکشن دستی در صورت فعال بودن تنظیمات.
 - گزینه «Do not publish out-of-stock products» برای جلوگیری از صف‌گذاری و ارسال محصول ناموجود در Rubika و Telegram.
@@ -32,11 +32,17 @@
 در نسخه 1.3.0 فایل اصلی برای سازگاری با نصب‌های قبلی تغییر نام داده نشده است. بنابراین نیازی به deactivate/reactivate دستی نیست. اگر در نسخه‌های آینده فایل به `woocommerce-social-bridge.php` منتقل شود، loader سازگار یا دستورالعمل ارتقای جداگانه ارائه خواهد شد.
 
 ## تب‌های تنظیمات
-- **General:** روشن/خاموش کل افزونه، auto-publish محصولات جدید، کنترل محصول ناموجود، زمان‌بندی، retry، جلوگیری از ارسال تکراری، forced resend و نگهداری لاگ.
-- **Rubika:** روشن/خاموش Rubika، توکن/کانال، قالب Rubika، تعداد تصویر، تصاویر مستثنی و تست پیام.
-- **Telegram:** روشن/خاموش Telegram، URL و کلید relay، HMAC اختیاری، قالب Telegram، parse mode، تعداد تصویر، آلبوم و تست relay.
-- **Queues:** نمایش جداگانه Rubika و Telegram با شمارش pending، processing، sent، failed و skipped و اکشن‌های مدیریت هر شبکه.
+- **General:** روشن/خاموش کل افزونه، auto-publish محصولات جدید، کنترل محصول ناموجود، زمان‌بندی سراسری ارسال، retry، جلوگیری از ارسال تکراری، forced resend و نگهداری لاگ.
+- **Rubika:** روشن/خاموش Rubika، توکن/کانال، قالب Rubika، تعداد تصویر، تصاویر مستثنی، تست پیام و کارت صف Rubika.
+- **Telegram:** روشن/خاموش Telegram، URL و کلید relay، HMAC اختیاری، قالب Telegram، parse mode، تعداد تصویر، آلبوم، تست relay و کارت صف Telegram.
 - **Logs / Diagnostics:** لاگ‌های اخیر، فیلتر شبکه، وضعیت محیط و پاک‌سازی لاگ/داده افزونه.
+
+## صف و زمان‌بندی ارسال
+- تب مستقل Queues حذف شده و صف هر پیام‌رسان داخل تب همان پیام‌رسان مدیریت می‌شود.
+- گزینه **Scheduled sending** در تب General تعیین می‌کند پردازش خودکار صف فقط در بازه مجاز انجام شود. این قانون برای Rubika، Telegram و شبکه‌های آینده اعمال می‌شود.
+- خارج از بازه مجاز، آیتم‌های pending همان pending باقی می‌مانند و خطای failed نمی‌گیرند.
+- دکمه «Add unsynced products to ... pending queue» فقط محصولات سینک‌نشده همان شبکه را بررسی و به صف pending همان شبکه اضافه می‌کند.
+- محصول سینک‌نشده یعنی محصولی که هرگز با payload فعلی به آن شبکه ارسال موفق نشده، یا payload hash فعلی آن نسبت به آخرین ارسال موفق همان شبکه تغییر کرده است.
 
 ## کنترل محصول ناموجود
 اگر گزینه **Do not publish out-of-stock products** روشن باشد:
@@ -51,6 +57,12 @@
 
 ## Changelog
 
+
+### 1.4.0 - Network-local queues and restored scheduling
+- تب مستقل Queues حذف شد و کارت خلاصه/کنترل صف Rubika داخل تب Rubika و کارت صف Telegram داخل تب Telegram قرار گرفت.
+- تنظیم **Scheduled sending** به تب General اضافه/بازگردانی شد و بازه مجاز ارسال برای پردازش خودکار همه پیام‌رسان‌ها اعمال می‌شود.
+- دکمه افزودن محصولات سینک‌نشده به صف pending برای هر پیام‌رسان اضافه شد؛ هر دکمه فقط صف همان شبکه را تغییر می‌دهد و از payload hash برای تشخیص synced/unsynced استفاده می‌کند.
+- آیتم‌های pending خارج از بازه زمان‌بندی pending باقی می‌مانند و failed نمی‌شوند.
 
 ### 1.3.1 - Admin UX verification and scoped styling
 - ساختار تب‌های General، Rubika، Telegram، Queues و Logs / Diagnostics بازبینی و تثبیت شد.
@@ -89,11 +101,11 @@
 - نسخه نصب‌شده در option `wcrb_plugin_version` ذخیره می‌شود و migration فقط هنگام قدیمی‌تر بودن نسخه اجرا می‌شود.
 
 ## چک‌لیست تست دستی ادمین
-1. در صفحه Plugins نام **WooCommerce Social Bridge** و نسخه 1.3.1 را ببینید.
-2. WooCommerce → Social Bridge را باز کنید و هر پنج تب را بررسی کنید.
+1. در صفحه Plugins نام **WooCommerce Social Bridge** و نسخه 1.4.0 را ببینید.
+2. WooCommerce → Social Bridge را باز کنید و مطمئن شوید تب مستقل Queues وجود ندارد و تب‌های General، Rubika، Telegram و Logs / Diagnostics دیده می‌شوند.
 3. Rubika test message را اجرا کنید.
 4. Telegram relay test را با relay روشن اجرا کنید.
 5. یک محصول موجود را از منوی «شبکه اجتماعی» به Rubika، Telegram و All enabled networks ارسال کنید.
 6. یک محصول ناموجود را با گزینه block out-of-stock روشن تست کنید و لاگ/وضعیت skipped یا failed را بررسی کنید.
-7. از تب Queues، صف Rubika و Telegram را جداگانه process/clear/requeue کنید.
+7. از داخل تب Rubika و Telegram، صف همان شبکه را جداگانه process/clear/requeue کنید و دکمه افزودن محصولات سینک‌نشده به صف pending را تست کنید.
 8. از تب Logs / Diagnostics فیلتر شبکه و پاک‌سازی لاگ را تست کنید.
