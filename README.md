@@ -51,6 +51,13 @@
 
 ## Changelog
 
+
+### 1.3.1 - Admin UX verification and scoped styling
+- ساختار تب‌های General، Rubika، Telegram، Queues و Logs / Diagnostics بازبینی و تثبیت شد.
+- CSS سبک و scope‌شده برای کارت‌ها، badgeها، پنل‌ها و اکشن‌های inline از طریق WordPress enqueue اضافه شد تا ظاهر تنظیمات قابل تشخیص‌تر و حرفه‌ای‌تر باشد.
+- نمایش badgeها از inline style به کلاس‌های سبک افزونه منتقل شد و همچنان بدون Bootstrap/Tailwind/React/Vue باقی ماند.
+- این نسخه هیچ option، جدول یا meta جدیدی را rename نمی‌کند و تنظیمات ذخیره‌شده قبلی حفظ می‌شوند.
+
 ### 1.3.0 - WooCommerce Social Bridge admin/queue update
 - نام نمایشی افزونه به **WooCommerce Social Bridge** تغییر کرد، اما optionها و slugهای `wcrb_*` برای سازگاری حفظ شدند.
 - تنظیمات به تب‌های General، Rubika، Telegram، Queues و Logs / Diagnostics تقسیم شد.
@@ -82,7 +89,7 @@
 - نسخه نصب‌شده در option `wcrb_plugin_version` ذخیره می‌شود و migration فقط هنگام قدیمی‌تر بودن نسخه اجرا می‌شود.
 
 ## چک‌لیست تست دستی ادمین
-1. در صفحه Plugins نام **WooCommerce Social Bridge** و نسخه 1.3.0 را ببینید.
+1. در صفحه Plugins نام **WooCommerce Social Bridge** و نسخه 1.3.1 را ببینید.
 2. WooCommerce → Social Bridge را باز کنید و هر پنج تب را بررسی کنید.
 3. Rubika test message را اجرا کنید.
 4. Telegram relay test را با relay روشن اجرا کنید.

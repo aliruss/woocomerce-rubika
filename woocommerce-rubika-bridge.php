@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Social Bridge
  * Description: Lightweight WooCommerce social publisher for Rubika and Telegram relay with queue, scheduling, and per-product controls.
- * Version: 1.3.0
+ * Version: 1.3.1
  * Author: Codex
  * Requires Plugins: woocommerce
  */
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 
 if (!class_exists('WCRB_Plugin')) {
     class WCRB_Plugin {
-        const VERSION = '1.3.0';
+        const VERSION = '1.3.1';
         const VERSION_OPTION = 'wcrb_plugin_version';
         const OPTION_KEY = 'wcrb_settings';
         const LAST_SENT_OPTION = 'wcrb_last_sent_at';
@@ -241,6 +241,12 @@ if (!class_exists('WCRB_Plugin')) {
             }
 
             wp_enqueue_media();
+            wp_register_style('wcrb-admin', false, array(), self::VERSION);
+            wp_enqueue_style('wcrb-admin');
+            wp_add_inline_style(
+                'wcrb-admin',
+                '.wcrb-wrap .nav-tab-wrapper{margin-top:16px}.wcrb-status-grid{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}.wcrb-card{background:#fff;border:1px solid #dcdcde;border-radius:4px;box-shadow:0 1px 1px rgba(0,0,0,.04);padding:14px}.wcrb-status-grid .wcrb-card{min-width:220px}.wcrb-panel{background:#fff;border:1px solid #dcdcde;border-radius:4px;box-shadow:0 1px 1px rgba(0,0,0,.04);padding:16px;max-width:1100px;margin-top:16px}.wcrb-network-card{margin:12px 0;max-width:980px}.wcrb-status-badge{display:inline-block;border-radius:999px;padding:2px 9px;font-weight:600;line-height:1.7}.wcrb-status-badge.is-enabled{background:#edfaef;color:#008a20}.wcrb-status-badge.is-disabled{background:#fcf0f1;color:#b32d2e}.wcrb-actions form,.wcrb-inline-action{display:inline-block;margin:0 8px 8px 0}.wcrb-secret-status{margin-inline-start:8px}.wcrb-help{max-width:720px}.wcrb-wrap textarea.code{direction:ltr}.wcrb-wrap .notice.inline{margin:10px 0 0}'
+            );
             wp_register_script('wcrb-admin', '', array('jquery'), self::VERSION, true);
             wp_enqueue_script('wcrb-admin');
             wp_add_inline_script(
@@ -434,27 +440,27 @@ if (!class_exists('WCRB_Plugin')) {
                     <?php endforeach; ?>
                 </nav>
 
-                <div class="wcrb-card-row" style="display:flex;flex-wrap:wrap;gap:12px;margin:16px 0;">
-                    <div class="postbox" style="min-width:220px;padding:12px;">
+                <div class="wcrb-status-grid">
+                    <div class="wcrb-card">
                         <strong><?php esc_html_e('Plugin status', 'wcrb'); ?></strong><br>
                         <?php echo $this->status_badge(!empty($settings['enable_plugin'])); ?>
                     </div>
-                    <div class="postbox" style="min-width:220px;padding:12px;">
+                    <div class="wcrb-card">
                         <strong><?php esc_html_e('Rubika', 'wcrb'); ?></strong><br>
                         <?php echo $this->status_badge(!empty($settings['rubika_enabled']) && $rubika_ready, $rubika_ready ? '' : __('Missing settings', 'wcrb')); ?>
                     </div>
-                    <div class="postbox" style="min-width:220px;padding:12px;">
+                    <div class="wcrb-card">
                         <strong><?php esc_html_e('Telegram', 'wcrb'); ?></strong><br>
                         <?php echo $this->status_badge(!empty($settings['telegram_enabled']) && $telegram_ready, $telegram_ready ? '' : __('Missing relay settings', 'wcrb')); ?>
                     </div>
-                    <div class="postbox" style="min-width:260px;padding:12px;">
+                    <div class="wcrb-card">
                         <strong><?php esc_html_e('Published products', 'wcrb'); ?></strong><br>
                         <?php echo esc_html(sprintf(__('Synced: %1$d | Unsynced: %2$d', 'wcrb'), $synced, $unsynced)); ?>
                     </div>
                 </div>
 
                 <?php if ($active_tab === 'general') : ?>
-                    <form method="post" action="options.php" class="postbox" style="padding:16px;max-width:980px;">
+                    <form method="post" action="options.php" class="wcrb-panel">
                         <?php settings_fields('wcrb_settings_group'); ?>
                         <input type="hidden" name="<?php echo esc_attr(self::OPTION_KEY); ?>[_active_tab]" value="general">
                         <h2><?php esc_html_e('General publishing controls', 'wcrb'); ?></h2>
@@ -472,7 +478,7 @@ if (!class_exists('WCRB_Plugin')) {
                         <?php submit_button(); ?>
                     </form>
                 <?php elseif ($active_tab === 'rubika') : ?>
-                    <form method="post" action="options.php" class="postbox" style="padding:16px;max-width:980px;">
+                    <form method="post" action="options.php" class="wcrb-panel">
                         <?php settings_fields('wcrb_settings_group'); ?>
                         <input type="hidden" name="<?php echo esc_attr(self::OPTION_KEY); ?>[_active_tab]" value="rubika">
                         <h2><?php esc_html_e('Rubika settings', 'wcrb'); ?> <?php echo $this->status_badge(!empty($settings['rubika_enabled']) && $rubika_ready, $rubika_ready ? '' : __('Missing bot token or channel', 'wcrb')); ?></h2>
@@ -491,7 +497,7 @@ if (!class_exists('WCRB_Plugin')) {
                     </form>
                     <p><?php $this->render_action_button('wcrb_send_test_message', 'wcrb_send_test_message', __('Send Rubika Hello test', 'wcrb'), array(), 'secondary'); ?></p>
                 <?php elseif ($active_tab === 'telegram') : ?>
-                    <form method="post" action="options.php" class="postbox" style="padding:16px;max-width:980px;">
+                    <form method="post" action="options.php" class="wcrb-panel">
                         <?php settings_fields('wcrb_settings_group'); ?>
                         <input type="hidden" name="<?php echo esc_attr(self::OPTION_KEY); ?>[_active_tab]" value="telegram">
                         <h2><?php esc_html_e('Telegram relay settings', 'wcrb'); ?> <?php echo $this->status_badge(!empty($settings['telegram_enabled']) && $telegram_ready, $telegram_ready ? '' : __('Missing relay URL or API key', 'wcrb')); ?></h2>
@@ -510,14 +516,14 @@ if (!class_exists('WCRB_Plugin')) {
                     </form>
                     <p><?php $this->render_action_button('wcrb_test_telegram_relay', 'wcrb_test_telegram_relay', __('Test Telegram relay', 'wcrb'), array(), 'secondary'); ?></p>
                 <?php elseif ($active_tab === 'queues') : ?>
-                    <div class="postbox" style="padding:16px;">
+                    <div class="wcrb-panel">
                         <h2><?php esc_html_e('Network queues', 'wcrb'); ?></h2>
                         <p><?php echo esc_html(sprintf(__('All queues — Pending: %1$d | Processing: %2$d | Sent: %3$d | Failed: %4$d | Skipped: %5$d', 'wcrb'), $queue_stats['pending'], $queue_stats['processing'], $queue_stats['sent'], $queue_stats['failed'], $queue_stats['skipped'])); ?></p>
                         <form style="display:inline-block;margin:0 8px 12px 0" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                             <?php wp_nonce_field('wcrb_enqueue_all'); ?><input type="hidden" name="action" value="wcrb_enqueue_all"><?php submit_button(__('Queue all published products', 'wcrb'), 'secondary', 'submit', false); ?>
                         </form>
                         <?php foreach (array('rubika' => __('Rubika queue', 'wcrb'), 'telegram' => __('Telegram queue', 'wcrb')) as $network => $label) : $stats = $network_queue_stats[$network]; ?>
-                            <div class="postbox" style="padding:14px;margin:12px 0;max-width:960px;">
+                            <div class="wcrb-card wcrb-network-card">
                                 <h3><?php echo esc_html($label); ?> <?php echo $this->status_badge($this->is_network_enabled($network), $this->is_network_enabled($network) ? '' : __('Disabled', 'wcrb')); ?></h3>
                                 <p><?php echo esc_html(sprintf(__('Pending: %1$d | Processing: %2$d | Sent: %3$d | Failed: %4$d | Skipped: %5$d', 'wcrb'), $stats['pending'], $stats['processing'], $stats['sent'], $stats['failed'], $stats['skipped'])); ?></p>
                                 <?php $this->render_action_button('wcrb_process_network_queue', 'wcrb_process_network_queue_' . $network, __('Process now', 'wcrb'), array('network' => $network), 'secondary'); ?>
@@ -529,7 +535,7 @@ if (!class_exists('WCRB_Plugin')) {
                         <p><?php $this->render_action_button('wcrb_clear_queue', 'wcrb_clear_queue', __('Clear all queues', 'wcrb'), array(), 'delete', __('Are you sure you want to clear all queues?', 'wcrb')); ?> <?php $this->render_action_button('wcrb_reset_sync_records', 'wcrb_reset_sync_records', __('Reset all sent status records', 'wcrb'), array(), 'secondary', __('Reset synced/unsynced product records for all networks?', 'wcrb')); ?></p>
                     </div>
                 <?php else : ?>
-                    <div class="postbox" style="padding:16px;max-width:1100px;">
+                    <div class="wcrb-panel">
                         <h2><?php esc_html_e('Logs / Diagnostics', 'wcrb'); ?></h2>
                         <p><?php esc_html_e('Logs include safe network context such as product ID, queue ID, request ID, status, and sanitized response summaries. Secrets are never intentionally logged.', 'wcrb'); ?></p>
                         <p><strong><?php esc_html_e('Environment', 'wcrb'); ?></strong>: <?php echo esc_html(sprintf(__('Version %1$s | WP-Cron: %2$s | Next queue run: %3$s', 'wcrb'), self::VERSION, defined('DISABLE_WP_CRON') && DISABLE_WP_CRON ? __('disabled', 'wcrb') : __('enabled', 'wcrb'), wp_next_scheduled(self::CRON_HOOK) ? get_date_from_gmt(gmdate('Y-m-d H:i:s', wp_next_scheduled(self::CRON_HOOK))) : __('not scheduled', 'wcrb'))); ?></p>
@@ -548,19 +554,16 @@ if (!class_exists('WCRB_Plugin')) {
 
         private function status_badge($enabled, $label = '') {
             $label = $label !== '' ? $label : ($enabled ? __('Enabled', 'wcrb') : __('Disabled', 'wcrb'));
-            $color = $enabled ? '#008a20' : '#b32d2e';
-            $background = $enabled ? '#edfaef' : '#fcf0f1';
             return sprintf(
-                '<span style="display:inline-block;border-radius:999px;padding:2px 9px;background:%1$s;color:%2$s;font-weight:600;">%3$s</span>',
-                esc_attr($background),
-                esc_attr($color),
+                '<span class="wcrb-status-badge %1$s">%2$s</span>',
+                $enabled ? 'is-enabled' : 'is-disabled',
                 esc_html($label)
             );
         }
 
         private function render_action_button($action, $nonce_action, $label, $hidden = array(), $button_type = 'secondary', $confirm = '') {
             ?>
-            <form style="display:inline-block;margin:0 8px 8px 0;" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" <?php echo $confirm ? 'onsubmit="return confirm(\'' . esc_js($confirm) . '\');"' : ''; ?>>
+            <form class="wcrb-inline-action" method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" <?php echo $confirm ? 'onsubmit="return confirm(\'' . esc_js($confirm) . '\');"' : ''; ?>>
                 <?php wp_nonce_field($nonce_action); ?>
                 <input type="hidden" name="action" value="<?php echo esc_attr($action); ?>">
                 <?php foreach ($hidden as $key => $value) : ?>
