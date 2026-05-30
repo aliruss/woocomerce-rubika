@@ -223,3 +223,28 @@ sudo systemctl restart telegram-relay
 ```
 
 Phase 2 implements only the relay server. WordPress/Rubika behavior remains in the plugin.
+
+## Manual message payloads (v1.5.0)
+
+The relay also accepts WordPress manual social messages using `type=manual` without a WooCommerce product object:
+
+```json
+{
+  "network": "telegram",
+  "request_id": "manual-uuid",
+  "type": "manual",
+  "message": {
+    "text": "Line 1\n\nLine 2",
+    "images": [
+      {"id": 11, "url": "https://example.com/wp-content/uploads/manual.jpg", "mime": "image/jpeg"}
+    ]
+  },
+  "options": {
+    "image_count": 1,
+    "parse_mode": "HTML",
+    "send_as_album": true
+  }
+}
+```
+
+Manual text line breaks are preserved. Product payload support remains unchanged.

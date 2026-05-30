@@ -6,7 +6,7 @@
 
 ## قابلیت‌ها
 - ساختار چندشبکه‌ای سبک برای Rubika، Telegram و شبکه‌های آینده.
-- تب‌های جداگانه تنظیمات: General، Rubika، Telegram و Logs / Diagnostics؛ مدیریت صف هر پیام‌رسان داخل تب همان پیام‌رسان قرار دارد.
+- تب‌های جداگانه تنظیمات: General، Rubika، Telegram، Manual Message و Logs / Diagnostics؛ مدیریت صف هر پیام‌رسان داخل تب همان پیام‌رسان قرار دارد.
 - تنظیمات مستقل Rubika: توکن بات، کانال، URL سایت، قالب پیام، تعداد تصویر، تصاویر مستثنی و تست پیام.
 - تنظیمات مستقل Telegram: Relay URL، Relay API Key، HMAC اختیاری، تعداد تصویر، قالب پیام، parse mode، ارسال آلبومی و تست اتصال relay.
 - قالب پیام قابل شخصی‌سازی با `{title}`، `{short_description}`، `{social_text}`، `{price}` و `{url}`.
@@ -16,6 +16,7 @@
 - پشتیبانی از تبدیل خودکار WEBP/AVIF و فرمت‌های ناسازگار به JPG نهایی و معتبر قبل از ارسال Rubika.
 - صف انتشار network-aware با وضعیت جدا برای Rubika و Telegram.
 - کنترل جداگانه صف‌ها داخل تب هر پیام‌رسان: اجرای دستی همان شبکه، افزودن محصولات سینک‌نشده به صف pending همان شبکه، توقف/ادامه صف همان شبکه، پاک‌سازی failed/skipped، پاک‌سازی کامل و requeue failed.
+- ارسال پیام دستی با متن چندخطی، انتخاب چند تصویر از رسانه وردپرس و انتخاب شبکه‌های مقصد Rubika/Telegram.
 - بازه زمانی مجاز انتشار روزانه، فاصله ارسال، حداکثر تلاش مجدد و تأخیر تلاش مجدد.
 - جلوگیری از ارسال تکراری با payload hash و امکان forced resend از اکشن دستی در صورت فعال بودن تنظیمات.
 - گزینه «Do not publish out-of-stock products» برای جلوگیری از صف‌گذاری و ارسال محصول ناموجود در Rubika و Telegram.
@@ -34,7 +35,8 @@
 ## تب‌های تنظیمات
 - **General:** روشن/خاموش کل افزونه، auto-publish محصولات جدید، کنترل محصول ناموجود، زمان‌بندی سراسری ارسال، retry، جلوگیری از ارسال تکراری، forced resend و نگهداری لاگ.
 - **Rubika:** روشن/خاموش Rubika، توکن/کانال، قالب Rubika، تعداد تصویر، تصاویر مستثنی، تست پیام و کارت صف Rubika.
-- **Telegram:** روشن/خاموش Telegram، URL و کلید relay، HMAC اختیاری، قالب Telegram، parse mode، تعداد تصویر، آلبوم، تست relay و کارت صف Telegram.
+- **Telegram:** روشن/خاموش Telegram، URL و کلید relay، HMAC اختیاری، قالب Telegram، parse mode، تعداد تصویر، تصاویر مستثنی اختصاصی Telegram، آلبوم، تست relay و کارت صف Telegram.
+- **Manual Message:** ارسال پیام دستی با متن، تصاویر انتخابی و checkbox شبکه‌های مقصد.
 - **Logs / Diagnostics:** لاگ‌های اخیر، فیلتر شبکه، وضعیت محیط و پاک‌سازی لاگ/داده افزونه.
 
 ## صف و زمان‌بندی ارسال
@@ -43,6 +45,8 @@
 - خارج از بازه مجاز، آیتم‌های pending همان pending باقی می‌مانند و خطای failed نمی‌گیرند.
 - دکمه «Add unsynced products to ... pending queue» فقط محصولات سینک‌نشده همان شبکه را بررسی و به صف pending همان شبکه اضافه می‌کند.
 - محصول سینک‌نشده یعنی محصولی که هرگز با payload فعلی به آن شبکه ارسال موفق نشده، یا payload hash فعلی آن نسبت به آخرین ارسال موفق همان شبکه تغییر کرده است.
+- تصاویر مستثنی Telegram مستقل از Rubika هستند و فقط روی ارسال محصول به Telegram و payload hash همان شبکه اثر می‌گذارند.
+- متن Telegram قبل از ارسال نرمال‌سازی می‌شود تا `<p>`، `<br>`، `<div>` و `<li>` به enter تبدیل شوند و چند خط خالی متوالی به یک خط خالی کاهش یابد.
 - هر صف پیام‌رسان را می‌توان جداگانه Pause/Resume کرد. وقتی یک شبکه paused باشد، پردازش خودکار همان شبکه متوقف می‌شود و pendingها pending باقی می‌مانند؛ شبکه‌های دیگر همچنان می‌توانند پردازش شوند.
 
 ## کنترل محصول ناموجود
@@ -58,6 +62,12 @@
 
 ## Changelog
 
+
+### 1.5.0 - Manual messages, Telegram formatting, Telegram exclusions
+- تب/بخش **Manual Message** اضافه شد تا ادمین بتواند متن دستی چندخطی، تصاویر انتخابی از رسانه وردپرس و شبکه‌های مقصد Rubika/Telegram را انتخاب و ارسال کند.
+- Telegram relay اکنون payload دستی `type=manual` را می‌پذیرد و خط‌ شکست‌های متن دستی را حفظ می‌کند.
+- نرمال‌سازی متن Telegram اضافه شد تا short description، متن سفارشی Telegram، متن عمومی social و پیام دستی enterهای معنادار را حفظ کنند.
+- تنظیم **Telegram excluded images** مستقل از Rubika اضافه شد و در collect images و payload hash تلگرام لحاظ می‌شود.
 
 ### 1.4.1 - Per-network unsynced actions and queue pause
 - کارت صف هر شبکه اکنون شمارش محصولات منتشرشده synced/unsynced همان شبکه را نشان می‌دهد و دکمه واضح افزودن محصولات سینک‌نشده به صف pending همان شبکه دارد.
@@ -108,11 +118,13 @@
 - نسخه نصب‌شده در option `wcrb_plugin_version` ذخیره می‌شود و migration فقط هنگام قدیمی‌تر بودن نسخه اجرا می‌شود.
 
 ## چک‌لیست تست دستی ادمین
-1. در صفحه Plugins نام **WooCommerce Social Bridge** و نسخه 1.4.1 را ببینید.
-2. WooCommerce → Social Bridge را باز کنید و مطمئن شوید تب مستقل Queues وجود ندارد و تب‌های General، Rubika، Telegram و Logs / Diagnostics دیده می‌شوند.
+1. در صفحه Plugins نام **WooCommerce Social Bridge** و نسخه 1.5.0 را ببینید.
+2. WooCommerce → Social Bridge را باز کنید و مطمئن شوید تب مستقل Queues وجود ندارد و تب‌های General، Rubika، Telegram، Manual Message و Logs / Diagnostics دیده می‌شوند.
 3. Rubika test message را اجرا کنید.
 4. Telegram relay test را با relay روشن اجرا کنید.
 5. یک محصول موجود را از منوی «شبکه اجتماعی» به Rubika، Telegram و All enabled networks ارسال کنید.
 6. یک محصول ناموجود را با گزینه block out-of-stock روشن تست کنید و لاگ/وضعیت skipped یا failed را بررسی کنید.
 7. از داخل تب Rubika و Telegram، صف همان شبکه را جداگانه process/pause/resume/clear/requeue کنید و دکمه افزودن محصولات سینک‌نشده به صف pending را تست کنید.
-8. از تب Logs / Diagnostics فیلتر شبکه و پاک‌سازی لاگ را تست کنید.
+8. در تب Telegram چند تصویر را در Telegram excluded images انتخاب کنید و مطمئن شوید روی Rubika اثر ندارد.
+9. در تب Manual Message متن فارسی چندخطی و چند تصویر انتخاب کنید و ارسال به Rubika و Telegram را جداگانه و همزمان تست کنید.
+10. از تب Logs / Diagnostics فیلتر شبکه و پاک‌سازی لاگ را تست کنید.

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Social Bridge
  * Description: Lightweight WooCommerce social publisher for Rubika and Telegram relay with queue, scheduling, and per-product controls.
- * Version: 1.4.1
+ * Version: 1.5.0
  * Author: Codex
  * Requires Plugins: woocommerce
  */
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 
 if (!class_exists('WCRB_Plugin')) {
     class WCRB_Plugin {
-        const VERSION = '1.4.1';
+        const VERSION = '1.5.0';
         const VERSION_OPTION = 'wcrb_plugin_version';
         const OPTION_KEY = 'wcrb_settings';
         const LAST_SENT_OPTION = 'wcrb_last_sent_at';
@@ -49,6 +49,7 @@ if (!class_exists('WCRB_Plugin')) {
             add_action('admin_post_wcrb_requeue_network_failed', array($this, 'handle_requeue_network_failed'));
             add_action('admin_post_wcrb_enqueue_unsynced_network', array($this, 'handle_enqueue_unsynced_network'));
             add_action('admin_post_wcrb_toggle_queue_pause', array($this, 'handle_toggle_queue_pause'));
+            add_action('admin_post_wcrb_send_manual_message', array($this, 'handle_send_manual_message'));
             add_action('transition_post_status', array($this, 'enqueue_newly_published_product'), 10, 3);
 
             add_action('admin_bar_menu', array($this, 'admin_bar_publish_button'), 100);
@@ -141,6 +142,7 @@ if (!class_exists('WCRB_Plugin')) {
                 'template' => "🛍️ {title}\n\n{short_description}\n\n💰 {price}\n🔗 {url}",
                 'image_count' => 1,
                 'excluded_images' => '',
+                'telegram_excluded_images' => '',
                 'interval_minutes' => 15,
                 'scheduled_sending_enabled' => 1,
                 'send_window_start' => '00:00',
@@ -257,9 +259,13 @@ if (!class_exists('WCRB_Plugin')) {
             wp_add_inline_script(
                 'wcrb-admin',
                 "jQuery(function($){
-                    var frame;
-                    function renderPreviews(ids){
-                        var wrap = $('#wcrb-excluded-preview');
+                    function parseIds(field){
+                        return field.val() ? field.val().split(',').map(function(v){ return parseInt(v,10); }).filter(Boolean) : [];
+                    }
+                    function renderPreviews(field){
+                        var target = field.data('preview');
+                        var wrap = target ? $(target) : $();
+                        var ids = parseIds(field);
                         wrap.empty();
                         if(!ids.length){return;}
                         ids.forEach(function(id){
@@ -270,16 +276,15 @@ if (!class_exists('WCRB_Plugin')) {
                             });
                         });
                     }
-
-                    $('#wcrb_pick_images').on('click', function(e){
+                    $('.wcrb-media-field').each(function(){ renderPreviews($(this)); });
+                    $(document).on('click', '.wcrb-pick-images', function(e){
                         e.preventDefault();
-                        var field = $('#wcrb_excluded_images');
-                        var selectedIds = field.val() ? field.val().split(',').map(function(v){ return parseInt(v,10); }).filter(Boolean) : [];
-
-                        if(frame){ frame.open(); return; }
-                        frame = wp.media({
-                            title: 'انتخاب تصاویر مستثنی',
-                            button: { text: 'انتخاب تصاویر' },
+                        var button = $(this);
+                        var field = $(button.data('target'));
+                        var selectedIds = parseIds(field);
+                        var frame = wp.media({
+                            title: button.data('title') || 'انتخاب تصاویر',
+                            button: { text: button.data('button') || 'انتخاب تصاویر' },
                             library: { type: 'image' },
                             multiple: true
                         });
@@ -294,19 +299,16 @@ if (!class_exists('WCRB_Plugin')) {
                         frame.on('select', function(){
                             var ids = frame.state().get('selection').map(function(att){ return att.id; });
                             field.val(ids.join(','));
-                            renderPreviews(ids);
+                            renderPreviews(field);
                         });
                         frame.open();
                     });
-
-                    $('#wcrb_clear_images').on('click', function(e){
+                    $(document).on('click', '.wcrb-clear-images', function(e){
                         e.preventDefault();
-                        $('#wcrb_excluded_images').val('');
-                        $('#wcrb-excluded-preview').empty();
+                        var field = $($(this).data('target'));
+                        field.val('');
+                        renderPreviews(field);
                     });
-
-                    var initial = $('#wcrb_excluded_images').val() ? $('#wcrb_excluded_images').val().split(',').map(function(v){ return parseInt(v,10); }).filter(Boolean) : [];
-                    renderPreviews(initial);
                 });"
             );
         }
@@ -338,6 +340,9 @@ if (!class_exists('WCRB_Plugin')) {
             }
             if (array_key_exists('excluded_images', $input)) {
                 $sanitized['excluded_images'] = implode(',', array_filter(array_map('absint', explode(',', (string) $input['excluded_images']))));
+            }
+            if (array_key_exists('telegram_excluded_images', $input)) {
+                $sanitized['telegram_excluded_images'] = implode(',', array_filter(array_map('absint', explode(',', (string) $input['telegram_excluded_images']))));
             }
             if (array_key_exists('interval_minutes', $input)) {
                 $sanitized['interval_minutes'] = max(1, absint($input['interval_minutes']));
@@ -421,6 +426,7 @@ if (!class_exists('WCRB_Plugin')) {
                 'general' => __('General', 'wcrb'),
                 'rubika' => __('Rubika', 'wcrb'),
                 'telegram' => __('Telegram', 'wcrb'),
+                'manual' => __('Manual Message', 'wcrb'),
                 'logs' => __('Logs / Diagnostics', 'wcrb'),
             );
             $active_tab = isset($_GET['tab']) ? sanitize_key(wp_unslash($_GET['tab'])) : 'general';
@@ -496,7 +502,7 @@ if (!class_exists('WCRB_Plugin')) {
                             <tr><th scope="row"><label for="wcrb_website_url"><?php esc_html_e('Website URL', 'wcrb'); ?></label></th><td><input type="url" id="wcrb_website_url" name="<?php echo esc_attr(self::OPTION_KEY); ?>[website_url]" class="regular-text" value="<?php echo esc_attr($settings['website_url']); ?>"></td></tr>
                             <tr><th scope="row"><label for="wcrb_template"><?php esc_html_e('Rubika message template', 'wcrb'); ?></label></th><td><textarea id="wcrb_template" name="<?php echo esc_attr(self::OPTION_KEY); ?>[template]" rows="8" class="large-text code"><?php echo esc_textarea($settings['template']); ?></textarea><p class="description"><?php esc_html_e('Supports {title}, {short_description}, {social_text}, {price}, and {url}.', 'wcrb'); ?></p></td></tr>
                             <tr><th scope="row"><label for="wcrb_image_count"><?php esc_html_e('Rubika image count', 'wcrb'); ?></label></th><td><input type="number" min="0" id="wcrb_image_count" name="<?php echo esc_attr(self::OPTION_KEY); ?>[image_count]" value="<?php echo esc_attr($settings['image_count']); ?>"></td></tr>
-                            <tr><th scope="row"><label for="wcrb_excluded_images"><?php esc_html_e('Excluded images', 'wcrb'); ?></label></th><td><input type="hidden" id="wcrb_excluded_images" name="<?php echo esc_attr(self::OPTION_KEY); ?>[excluded_images]" value="<?php echo esc_attr($settings['excluded_images']); ?>"><p><button type="button" class="button" id="wcrb_pick_images"><?php esc_html_e('Select from Media Library', 'wcrb'); ?></button> <button type="button" class="button-link-delete" id="wcrb_clear_images"><?php esc_html_e('Clear selection', 'wcrb'); ?></button></p><div id="wcrb-excluded-preview"></div></td></tr>
+                            <tr><th scope="row"><label for="wcrb_excluded_images"><?php esc_html_e('Excluded images', 'wcrb'); ?></label></th><td><input type="hidden" id="wcrb_excluded_images" class="wcrb-media-field" data-preview="#wcrb-excluded-preview" name="<?php echo esc_attr(self::OPTION_KEY); ?>[excluded_images]" value="<?php echo esc_attr($settings['excluded_images']); ?>"><p><button type="button" class="button wcrb-pick-images" data-target="#wcrb_excluded_images"><?php esc_html_e('Select from Media Library', 'wcrb'); ?></button> <button type="button" class="button-link-delete wcrb-clear-images" data-target="#wcrb_excluded_images"><?php esc_html_e('Clear selection', 'wcrb'); ?></button></p><div id="wcrb-excluded-preview"></div></td></tr>
                             <tr><th scope="row"><?php esc_html_e('Rubika send behavior', 'wcrb'); ?></th><td><label><input type="checkbox" name="<?php echo esc_attr(self::OPTION_KEY); ?>[disable_notification]" value="1" <?php checked((int) $settings['disable_notification'], 1); ?>> <?php esc_html_e('Disable Rubika notification when supported', 'wcrb'); ?></label></td></tr>
                         </table>
                         <?php submit_button(); ?>
@@ -515,6 +521,7 @@ if (!class_exists('WCRB_Plugin')) {
                             <tr><th scope="row"><?php esc_html_e('Relay API key', 'wcrb'); ?></th><td><input type="password" name="<?php echo esc_attr(self::OPTION_KEY); ?>[telegram_relay_api_key]" class="regular-text" value="" autocomplete="new-password" placeholder="<?php echo esc_attr($settings['telegram_relay_api_key'] ? __('Saved - leave blank to keep', 'wcrb') : __('Missing', 'wcrb')); ?>"> <?php echo $this->status_badge(!empty($settings['telegram_relay_api_key']), !empty($settings['telegram_relay_api_key']) ? __('Saved', 'wcrb') : __('Missing', 'wcrb')); ?></td></tr>
                             <tr><th scope="row"><?php esc_html_e('Optional HMAC secret', 'wcrb'); ?></th><td><input type="password" name="<?php echo esc_attr(self::OPTION_KEY); ?>[telegram_hmac_secret]" class="regular-text" value="" autocomplete="new-password" placeholder="<?php echo esc_attr($settings['telegram_hmac_secret'] ? __('Saved - leave blank to keep', 'wcrb') : __('Optional', 'wcrb')); ?>"> <?php echo $this->status_badge(!empty($settings['telegram_hmac_secret']), !empty($settings['telegram_hmac_secret']) ? __('Saved', 'wcrb') : __('Not set', 'wcrb')); ?></td></tr>
                             <tr><th scope="row"><label for="wcrb_telegram_image_count"><?php esc_html_e('Telegram image count', 'wcrb'); ?></label></th><td><input type="number" min="0" max="10" id="wcrb_telegram_image_count" name="<?php echo esc_attr(self::OPTION_KEY); ?>[telegram_image_count]" value="<?php echo esc_attr($settings['telegram_image_count']); ?>"></td></tr>
+                            <tr><th scope="row"><label for="wcrb_telegram_excluded_images"><?php esc_html_e('Telegram excluded images', 'wcrb'); ?></label></th><td><input type="hidden" id="wcrb_telegram_excluded_images" class="wcrb-media-field" data-preview="#wcrb-telegram-excluded-preview" name="<?php echo esc_attr(self::OPTION_KEY); ?>[telegram_excluded_images]" value="<?php echo esc_attr($settings['telegram_excluded_images']); ?>"><p><button type="button" class="button wcrb-pick-images" data-target="#wcrb_telegram_excluded_images"><?php esc_html_e('Select from Media Library', 'wcrb'); ?></button> <button type="button" class="button-link-delete wcrb-clear-images" data-target="#wcrb_telegram_excluded_images"><?php esc_html_e('Clear selection', 'wcrb'); ?></button></p><div id="wcrb-telegram-excluded-preview"></div><p class="description"><?php esc_html_e('Only affects Telegram product sends and payload hashes; Rubika exclusions stay independent.', 'wcrb'); ?></p></td></tr>
                             <tr><th scope="row"><label for="wcrb_telegram_template"><?php esc_html_e('Telegram message template', 'wcrb'); ?></label></th><td><textarea id="wcrb_telegram_template" name="<?php echo esc_attr(self::OPTION_KEY); ?>[telegram_template]" rows="8" class="large-text code"><?php echo esc_textarea($settings['telegram_template']); ?></textarea><p class="description"><?php esc_html_e('Falls back to product social text, short description, title, price, and URL.', 'wcrb'); ?></p></td></tr>
                             <tr><th scope="row"><label for="wcrb_telegram_parse_mode"><?php esc_html_e('Telegram parse mode', 'wcrb'); ?></label></th><td><select id="wcrb_telegram_parse_mode" name="<?php echo esc_attr(self::OPTION_KEY); ?>[telegram_parse_mode]"><option value="HTML" <?php selected($settings['telegram_parse_mode'], 'HTML'); ?>>HTML</option><option value="MARKDOWN" <?php selected($settings['telegram_parse_mode'], 'MARKDOWN'); ?>>Markdown</option><option value="NONE" <?php selected($settings['telegram_parse_mode'], 'NONE'); ?>>None</option></select></td></tr>
                             <tr><th scope="row"><?php esc_html_e('Album behavior', 'wcrb'); ?></th><td><label><input type="checkbox" name="<?php echo esc_attr(self::OPTION_KEY); ?>[telegram_send_as_album]" value="1" <?php checked((int) $settings['telegram_send_as_album'], 1); ?>> <?php esc_html_e('Ask relay to send multiple images as an album', 'wcrb'); ?></label></td></tr>
@@ -523,6 +530,25 @@ if (!class_exists('WCRB_Plugin')) {
                     </form>
                     <p><?php $this->render_action_button('wcrb_test_telegram_relay', 'wcrb_test_telegram_relay', __('Test Telegram relay', 'wcrb'), array(), 'secondary'); ?></p>
                     <?php $this->render_network_queue_card('telegram', $network_queue_stats['telegram']); ?>
+
+                <?php elseif ($active_tab === 'manual') : ?>
+                    <div class="wcrb-panel">
+                        <h2><?php esc_html_e('Manual Social Message', 'wcrb'); ?></h2>
+                        <p class="description"><?php esc_html_e('Send a custom message and selected media to one or more enabled networks immediately. Each network result is handled independently.', 'wcrb'); ?></p>
+                        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                            <?php wp_nonce_field('wcrb_send_manual_message'); ?>
+                            <input type="hidden" name="action" value="wcrb_send_manual_message">
+                            <table class="form-table" role="presentation">
+                                <tr><th scope="row"><label for="wcrb_manual_text"><?php esc_html_e('Custom message text', 'wcrb'); ?></label></th><td><textarea id="wcrb_manual_text" name="manual_text" rows="8" class="large-text code"></textarea><p class="description"><?php esc_html_e('Line breaks and Persian text are preserved. Safe limited HTML is accepted where supported.', 'wcrb'); ?></p></td></tr>
+                                <tr><th scope="row"><?php esc_html_e('Custom images', 'wcrb'); ?></th><td><input type="hidden" id="wcrb_manual_images" class="wcrb-media-field" data-preview="#wcrb-manual-preview" name="manual_image_ids" value=""><p><button type="button" class="button wcrb-pick-images" data-target="#wcrb_manual_images"><?php esc_html_e('Select from Media Library', 'wcrb'); ?></button> <button type="button" class="button-link-delete wcrb-clear-images" data-target="#wcrb_manual_images"><?php esc_html_e('Clear selection', 'wcrb'); ?></button></p><div id="wcrb-manual-preview"></div></td></tr>
+                                <tr><th scope="row"><?php esc_html_e('Target networks', 'wcrb'); ?></th><td>
+                                    <label><input type="checkbox" name="networks[]" value="rubika" <?php disabled(!$this->is_network_enabled('rubika')); ?>> Rubika <?php echo $this->status_badge($this->is_network_enabled('rubika'), $this->is_network_enabled('rubika') ? __('Enabled', 'wcrb') : __('Disabled', 'wcrb')); ?></label><br>
+                                    <label><input type="checkbox" name="networks[]" value="telegram" <?php disabled(!$this->is_network_enabled('telegram')); ?>> Telegram <?php echo $this->status_badge($this->is_network_enabled('telegram'), $this->is_network_enabled('telegram') ? __('Enabled', 'wcrb') : __('Disabled', 'wcrb')); ?></label>
+                                </td></tr>
+                            </table>
+                            <?php submit_button(__('Send manual message now', 'wcrb'), 'primary'); ?>
+                        </form>
+                    </div>
                 <?php else : ?>
                     <div class="wcrb-panel">
                         <h2><?php esc_html_e('Logs / Diagnostics', 'wcrb'); ?></h2>
@@ -895,6 +921,131 @@ if (!class_exists('WCRB_Plugin')) {
         }
 
 
+
+
+        public function handle_send_manual_message() {
+            if (!current_user_can('manage_woocommerce') || !check_admin_referer('wcrb_send_manual_message')) {
+                wp_die(esc_html__('Not allowed.', 'wcrb'));
+            }
+
+            $raw_text = isset($_POST['manual_text']) ? wp_unslash($_POST['manual_text']) : '';
+            $text = wp_kses_post($raw_text);
+            $image_ids = isset($_POST['manual_image_ids']) ? array_filter(array_map('absint', explode(',', sanitize_text_field(wp_unslash($_POST['manual_image_ids']))))) : array();
+            $selected = isset($_POST['networks']) && is_array($_POST['networks']) ? array_map('sanitize_key', wp_unslash($_POST['networks'])) : array();
+            $networks = array_values(array_intersect(array('rubika', 'telegram'), $selected));
+
+            if (empty($networks)) {
+                wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'tab' => 'manual', 'wcrb_notice' => 'manual_no_network'), admin_url('admin.php')));
+                exit;
+            }
+            if (trim(wp_strip_all_tags($text)) === '' && empty($image_ids)) {
+                wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'tab' => 'manual', 'wcrb_notice' => 'manual_empty'), admin_url('admin.php')));
+                exit;
+            }
+
+            $summary = array();
+            $this->add_log('info', 'Manual message send started.', array('network' => implode(',', $networks), 'action' => 'manual_send', 'image_count' => count($image_ids), 'text_length' => strlen(wp_strip_all_tags($text))));
+            foreach ($networks as $network) {
+                if (!$this->is_network_enabled($network) || !$this->network_has_required_settings($network)) {
+                    $summary[$network] = 'missing_settings';
+                    $this->add_log('error', 'Manual message network skipped.', array('network' => $network, 'action' => 'manual_send', 'status' => 'missing_settings'));
+                    continue;
+                }
+                $result = $network === 'telegram' ? $this->send_manual_to_telegram($text, $image_ids) : $this->send_manual_to_rubika($text, $image_ids);
+                $summary[$network] = $result['success'] ? 'ok' : 'fail';
+                $this->add_log($result['success'] ? 'info' : 'error', 'Manual message network result.', array('network' => $network, 'action' => 'manual_send', 'status' => $summary[$network], 'message' => $result['message']));
+            }
+
+            wp_safe_redirect(add_query_arg(array('page' => 'wcrb-settings', 'tab' => 'manual', 'wcrb_notice' => 'manual_sent', 'manual_result' => rawurlencode(wp_json_encode($summary))), admin_url('admin.php')));
+            exit;
+        }
+
+        private function send_manual_to_rubika($text, $image_ids) {
+            $settings = $this->get_settings();
+            $plain_text = trim(wp_strip_all_tags($text));
+            if (empty($image_ids)) {
+                return $this->send_text_message($settings['bot_token'], array(
+                    'chat_id' => $settings['channel'],
+                    'text' => $plain_text,
+                    'disable_notification' => (bool) $settings['disable_notification'],
+                ));
+            }
+
+            foreach ($image_ids as $index => $attachment_id) {
+                $upload = $this->upload_image_to_rubika($attachment_id, $settings['bot_token'], 0);
+                if (!$upload['success']) {
+                    return array('success' => false, 'message' => 'Rubika manual image upload failed: ' . $upload['message']);
+                }
+                $payload = array(
+                    'chat_id' => $settings['channel'],
+                    'file_id' => $upload['file_id'],
+                    'text' => $index === 0 ? $plain_text : '',
+                    'disable_notification' => (bool) $settings['disable_notification'],
+                );
+                $result = $this->send_image_message($settings['bot_token'], $payload);
+                if (!$result['success']) {
+                    return array('success' => false, 'message' => 'Rubika manual image send failed: ' . $result['message']);
+                }
+            }
+            return array('success' => true, 'message' => 'Manual message sent to Rubika');
+        }
+
+        private function send_manual_to_telegram($text, $image_ids) {
+            $settings = $this->get_settings();
+            if (empty($settings['telegram_relay_url']) || empty($settings['telegram_relay_api_key'])) {
+                return array('success' => false, 'message' => 'Telegram relay URL or API key is missing');
+            }
+            $request_id = $this->build_request_id(0, 'telegram');
+            $formatted_text = $this->format_telegram_text($text);
+            $payload = array(
+                'network' => 'telegram',
+                'request_id' => $request_id,
+                'type' => 'manual',
+                'message' => array(
+                    'text' => $formatted_text,
+                    'images' => $this->attachment_payloads($image_ids),
+                ),
+                'options' => array(
+                    'image_count' => count($image_ids),
+                    'parse_mode' => $settings['telegram_parse_mode'],
+                    'send_as_album' => !empty($settings['telegram_send_as_album']),
+                ),
+            );
+            $body = wp_json_encode($payload);
+            if (!$body) {
+                return array('success' => false, 'message' => 'Could not encode Telegram manual payload');
+            }
+            $headers = array('Content-Type' => 'application/json; charset=utf-8', 'X-Relay-Api-Key' => $settings['telegram_relay_api_key'], 'X-Request-Id' => $request_id);
+            if (!empty($settings['telegram_hmac_secret'])) {
+                $headers['X-Relay-Signature'] = hash_hmac('sha256', $body, $settings['telegram_hmac_secret']);
+            }
+            $response = wp_remote_post($settings['telegram_relay_url'], array('timeout' => 30, 'headers' => $headers, 'body' => $body));
+            if (is_wp_error($response)) {
+                return array('success' => false, 'message' => $response->get_error_message());
+            }
+            $status_code = wp_remote_retrieve_response_code($response);
+            $raw_body = wp_remote_retrieve_body($response);
+            if ($status_code < 200 || $status_code >= 300) {
+                return array('success' => false, 'message' => 'Relay HTTP ' . $status_code . ': ' . mb_substr(wp_strip_all_tags($raw_body), 0, 200));
+            }
+            $decoded = json_decode($raw_body, true);
+            if (is_array($decoded) && isset($decoded['success']) && !$decoded['success']) {
+                return array('success' => false, 'message' => !empty($decoded['error']) ? sanitize_text_field($decoded['error']) : 'Telegram relay returned success=false');
+            }
+            return array('success' => true, 'message' => 'Manual message sent to Telegram relay');
+        }
+
+        private function attachment_payloads($image_ids) {
+            $images = array();
+            foreach ($image_ids as $image_id) {
+                $url = wp_get_attachment_url($image_id);
+                if (!$url) {
+                    continue;
+                }
+                $images[] = array('id' => (int) $image_id, 'url' => esc_url_raw($url), 'mime' => get_post_mime_type($image_id) ?: 'image/jpeg');
+            }
+            return $images;
+        }
 
         public function handle_toggle_queue_pause() {
             $network = isset($_POST['network']) ? $this->normalize_network(sanitize_key(wp_unslash($_POST['network']))) : 'rubika';
@@ -1590,7 +1741,7 @@ if (!class_exists('WCRB_Plugin')) {
 
         private function build_telegram_relay_payload($product, $request_id) {
             $settings = $this->get_settings();
-            $image_ids = $this->collect_images($product, (int) $settings['telegram_image_count'], $settings['excluded_images']);
+            $image_ids = $this->collect_images($product, (int) $settings['telegram_image_count'], $settings['telegram_excluded_images']);
             $images = array();
             foreach ($image_ids as $image_id) {
                 $url = wp_get_attachment_url($image_id);
@@ -1612,7 +1763,7 @@ if (!class_exists('WCRB_Plugin')) {
                     'title' => $product->get_name(),
                     'url' => get_permalink($product->get_id()),
                     'price' => $this->plain_product_price($product),
-                    'short_description' => wp_strip_all_tags($product->get_short_description()),
+                    'short_description' => $this->format_telegram_text($product->get_short_description()),
                     'social_text' => $this->select_social_text($product, 'telegram'),
                     'caption' => $this->render_network_template($product, 'telegram'),
                     'images' => $images,
@@ -1623,6 +1774,24 @@ if (!class_exists('WCRB_Plugin')) {
                     'send_as_album' => !empty($settings['telegram_send_as_album']),
                 ),
             );
+        }
+
+
+
+        private function format_telegram_text($text) {
+            $text = (string) $text;
+            $text = preg_replace('/<\s*br\s*\/?\s*>/i', "\n", $text);
+            $text = preg_replace('/<\s*\/\s*(p|div)\s*>/i', "\n\n", $text);
+            $text = preg_replace('/<\s*(p|div)\b[^>]*>/i', '', $text);
+            $text = preg_replace('/<\s*li\b[^>]*>/i', "\n", $text);
+            $text = preg_replace('/<\s*\/\s*li\s*>/i', "\n", $text);
+            $text = wp_strip_all_tags($text, false);
+            $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, get_bloginfo('charset') ?: 'UTF-8');
+            $text = str_replace(array("\r\n", "\r"), "\n", $text);
+            $lines = array_map('trim', explode("\n", $text));
+            $text = implode("\n", $lines);
+            $text = preg_replace("/\n{3,}/", "\n\n", $text);
+            return trim($text);
         }
 
         private function render_network_template($product, $network) {
@@ -1637,7 +1806,8 @@ if (!class_exists('WCRB_Plugin')) {
                 '{price}' => $this->format_product_price($product),
                 '{url}' => get_permalink($product->get_id()),
             );
-            return strtr($template, $replacements);
+            $rendered = strtr($template, $replacements);
+            return $network === 'telegram' ? $this->format_telegram_text($rendered) : $rendered;
         }
 
         private function select_social_text($product, $network) {
@@ -1645,15 +1815,15 @@ if (!class_exists('WCRB_Plugin')) {
             $network_text_key = $network === 'telegram' ? '_wcrb_telegram_text' : '_wcrb_rubika_text';
             $network_text = trim((string) get_post_meta($product_id, $network_text_key, true));
             if ($network_text !== '') {
-                return $network_text;
+                return $network === 'telegram' ? $this->format_telegram_text($network_text) : $network_text;
             }
 
             $general = trim((string) get_post_meta($product_id, '_wcrb_social_text', true));
             if ($general !== '') {
-                return $general;
+                return $network === 'telegram' ? $this->format_telegram_text($general) : $general;
             }
 
-            $short_description = trim(wp_strip_all_tags($product->get_short_description()));
+            $short_description = $network === 'telegram' ? $this->format_telegram_text($product->get_short_description()) : trim(wp_strip_all_tags($product->get_short_description()));
             if ($short_description !== '') {
                 return $short_description;
             }
@@ -2158,6 +2328,27 @@ if (!class_exists('WCRB_Plugin')) {
                 return;
             }
 
+
+
+            if ($_GET['wcrb_notice'] === 'manual_no_network') {
+                echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__('Please select at least one target network for the manual message.', 'wcrb') . '</p></div>';
+            }
+
+            if ($_GET['wcrb_notice'] === 'manual_empty') {
+                echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__('Manual message text and images cannot both be empty.', 'wcrb') . '</p></div>';
+            }
+
+            if ($_GET['wcrb_notice'] === 'manual_sent') {
+                $summary = isset($_GET['manual_result']) ? json_decode(rawurldecode(sanitize_text_field(wp_unslash($_GET['manual_result']))), true) : array();
+                $parts = array();
+                if (is_array($summary)) {
+                    foreach ($summary as $network => $status) {
+                        $parts[] = ucfirst(sanitize_key($network)) . ': ' . sanitize_text_field($status);
+                    }
+                }
+                echo '<div class="notice notice-info is-dismissible"><p>' . esc_html__('Manual message result: ', 'wcrb') . esc_html(implode(' | ', $parts)) . '</p></div>';
+            }
+
             if ($_GET['wcrb_notice'] === 'single') {
                 echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__('Product was queued for enabled social networks.', 'wcrb') . '</p></div>';
             }
@@ -2308,7 +2499,8 @@ if (!class_exists('WCRB_Plugin')) {
             $settings = $this->get_settings();
             $network = $this->normalize_network($network);
             $image_count = $network === 'telegram' ? (int) $settings['telegram_image_count'] : (int) $settings['image_count'];
-            $image_ids = $this->collect_images($product, $image_count, $settings['excluded_images']);
+            $excluded_images = $network === 'telegram' ? $settings['telegram_excluded_images'] : $settings['excluded_images'];
+            $image_ids = $this->collect_images($product, $image_count, $excluded_images);
             $image_urls = array();
             foreach ($image_ids as $image_id) {
                 $image_urls[] = wp_get_attachment_url($image_id);
@@ -2325,6 +2517,8 @@ if (!class_exists('WCRB_Plugin')) {
                     'image_count' => $image_count,
                     'template' => $network === 'telegram' ? $settings['telegram_template'] : $settings['template'],
                     'parse_mode' => $network === 'telegram' ? $settings['telegram_parse_mode'] : '',
+                    'send_as_album' => $network === 'telegram' ? !empty($settings['telegram_send_as_album']) : '',
+                    'excluded_images' => $excluded_images,
                     'destination' => $network === 'telegram' ? $settings['telegram_relay_url'] : $settings['channel'],
                 ),
             );

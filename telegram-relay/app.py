@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
-from pydantic import BaseModel, Field, HttpUrl, ValidationError, validator
+from pydantic import BaseModel, Field, HttpUrl, ValidationError, model_validator, validator
 from starlette.responses import JSONResponse
 
 load_dotenv()
@@ -91,6 +91,11 @@ class ProductPayload(BaseModel):
     images: list[ImagePayload] = Field(default_factory=list)
 
 
+class ManualMessagePayload(BaseModel):
+    text: str = ""
+    images: list[ImagePayload] = Field(default_factory=list)
+
+
 class OptionsPayload(BaseModel):
     image_count: int = 1
     parse_mode: str = "HTML"
@@ -109,7 +114,9 @@ class OptionsPayload(BaseModel):
 class RelayPayload(BaseModel):
     network: str
     request_id: str
-    product: ProductPayload
+    type: str = "product"
+    product: Optional[ProductPayload] = None
+    message: Optional[ManualMessagePayload] = None
     options: OptionsPayload = Field(default_factory=OptionsPayload)
 
     @validator("network")
@@ -117,6 +124,16 @@ class RelayPayload(BaseModel):
         if value != "telegram":
             raise ValueError("unsupported network")
         return value
+
+    @model_validator(mode="after")
+    def validate_payload_type(self) -> "RelayPayload":
+        payload_type = self.type or "product"
+        if payload_type == "manual":
+            if not self.message or (not self.message.text.strip() and not self.message.images):
+                raise ValueError("manual payload requires text or images")
+        elif not self.product:
+            raise ValueError("product payload requires product")
+        return self
 
 
 def require_config() -> None:
@@ -133,7 +150,7 @@ def make_response(success: bool, payload: RelayPayload | None, method: str, **ex
     body = {
         "success": success,
         "request_id": payload.request_id if payload else extra.get("request_id"),
-        "product_id": payload.product.id if payload else extra.get("product_id"),
+        "product_id": payload.product.id if payload and payload.product else extra.get("product_id"),
         "network": "telegram",
         "method": method,
     }
@@ -177,8 +194,12 @@ def safe_html_text(text: str, parse_mode: str) -> tuple[str, Optional[str]]:
     return text or "", None
 
 
-def product_text(payload: RelayPayload) -> str:
+def payload_text(payload: RelayPayload) -> str:
+    if payload.type == "manual" and payload.message:
+        return payload.message.text or ""
     product = payload.product
+    if not product:
+        return ""
     if product.caption:
         return product.caption
     text = product.social_text or product.short_description or product.title
@@ -351,22 +372,24 @@ async def send_telegram(
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.errors()) from exc
 
-    context = {"request_id": payload.request_id, "product_id": payload.product.id, "network": "telegram"}
+    product_id = payload.product.id if payload.product else 0
+    context = {"request_id": payload.request_id, "product_id": product_id, "network": "telegram"}
     log.info("Relay request accepted", extra=context)
 
     downloaded: list[Path] = []
     method = "unknown"
     message_ids: list[int] = []
     try:
-        selected_images = payload.product.images[: max(0, payload.options.image_count)]
+        source_images = payload.message.images if payload.type == "manual" and payload.message else (payload.product.images if payload.product else [])
+        selected_images = source_images[: max(0, payload.options.image_count)]
         for image in selected_images[:MAX_TELEGRAM_MEDIA]:
-            path = download_image(image, payload.request_id, payload.product.id)
+            path = download_image(image, payload.request_id, product_id)
             if path:
                 downloaded.append(path)
 
-        raw_text = product_text(payload)
+        raw_text = payload_text(payload)
         escaped_text, parse_mode = safe_html_text(raw_text, payload.options.parse_mode)
-        caption = ensure_link_in_caption(escaped_text, str(payload.product.url), CAPTION_LIMIT)
+        caption = ensure_link_in_caption(escaped_text, str(payload.product.url), CAPTION_LIMIT) if payload.product else escaped_text[:CAPTION_LIMIT]
 
         image_status = "sent_with_images"
         if len(downloaded) == 1:
@@ -380,7 +403,7 @@ async def send_telegram(
         else:
             method = "sendMessage"
             image_status = "no_valid_image_available"
-            message_ids = send_text_messages(escaped_text + "\n\n(no valid image was available)", parse_mode, context)
+            message_ids = send_text_messages(escaped_text if escaped_text else "(no valid image was available)", parse_mode, context)
             log.warning("No valid image was available; sent text-only fallback", extra=context)
 
         return make_response(
