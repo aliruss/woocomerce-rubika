@@ -15,7 +15,7 @@
 - انتخاب تعداد تصویر ارسالی و انتخاب تصاویر مستثنی از **رسانه وردپرس** (Multi Select).
 - پشتیبانی از تبدیل خودکار WEBP/AVIF و فرمت‌های ناسازگار به JPG نهایی و معتبر قبل از ارسال Rubika.
 - صف انتشار network-aware با وضعیت جدا برای Rubika و Telegram.
-- کنترل جداگانه صف‌ها داخل تب هر پیام‌رسان: اجرای دستی همان شبکه، افزودن محصولات سینک‌نشده به صف pending همان شبکه، پاک‌سازی failed/skipped، پاک‌سازی کامل و requeue failed.
+- کنترل جداگانه صف‌ها داخل تب هر پیام‌رسان: اجرای دستی همان شبکه، افزودن محصولات سینک‌نشده به صف pending همان شبکه، توقف/ادامه صف همان شبکه، پاک‌سازی failed/skipped، پاک‌سازی کامل و requeue failed.
 - بازه زمانی مجاز انتشار روزانه، فاصله ارسال، حداکثر تلاش مجدد و تأخیر تلاش مجدد.
 - جلوگیری از ارسال تکراری با payload hash و امکان forced resend از اکشن دستی در صورت فعال بودن تنظیمات.
 - گزینه «Do not publish out-of-stock products» برای جلوگیری از صف‌گذاری و ارسال محصول ناموجود در Rubika و Telegram.
@@ -43,6 +43,7 @@
 - خارج از بازه مجاز، آیتم‌های pending همان pending باقی می‌مانند و خطای failed نمی‌گیرند.
 - دکمه «Add unsynced products to ... pending queue» فقط محصولات سینک‌نشده همان شبکه را بررسی و به صف pending همان شبکه اضافه می‌کند.
 - محصول سینک‌نشده یعنی محصولی که هرگز با payload فعلی به آن شبکه ارسال موفق نشده، یا payload hash فعلی آن نسبت به آخرین ارسال موفق همان شبکه تغییر کرده است.
+- هر صف پیام‌رسان را می‌توان جداگانه Pause/Resume کرد. وقتی یک شبکه paused باشد، پردازش خودکار همان شبکه متوقف می‌شود و pendingها pending باقی می‌مانند؛ شبکه‌های دیگر همچنان می‌توانند پردازش شوند.
 
 ## کنترل محصول ناموجود
 اگر گزینه **Do not publish out-of-stock products** روشن باشد:
@@ -57,6 +58,12 @@
 
 ## Changelog
 
+
+### 1.4.1 - Per-network unsynced actions and queue pause
+- کارت صف هر شبکه اکنون شمارش محصولات منتشرشده synced/unsynced همان شبکه را نشان می‌دهد و دکمه واضح افزودن محصولات سینک‌نشده به صف pending همان شبکه دارد.
+- نتیجه افزودن unsyncedها اکنون تعداد scanned، unsynced found، added، already synced، out of stock، already pending، invalid/ineligible و errors را نمایش می‌دهد.
+- کنترل Pause/Resume برای Rubika و Telegram اضافه شد و پردازش خودکار صف وضعیت pause هر شبکه را مستقل رعایت می‌کند.
+- توقف صف هیچ آیتم pending را failed یا حذف نمی‌کند و روی شبکه دیگر اثر نمی‌گذارد.
 
 ### 1.4.0 - Network-local queues and restored scheduling
 - تب مستقل Queues حذف شد و کارت خلاصه/کنترل صف Rubika داخل تب Rubika و کارت صف Telegram داخل تب Telegram قرار گرفت.
@@ -101,11 +108,11 @@
 - نسخه نصب‌شده در option `wcrb_plugin_version` ذخیره می‌شود و migration فقط هنگام قدیمی‌تر بودن نسخه اجرا می‌شود.
 
 ## چک‌لیست تست دستی ادمین
-1. در صفحه Plugins نام **WooCommerce Social Bridge** و نسخه 1.4.0 را ببینید.
+1. در صفحه Plugins نام **WooCommerce Social Bridge** و نسخه 1.4.1 را ببینید.
 2. WooCommerce → Social Bridge را باز کنید و مطمئن شوید تب مستقل Queues وجود ندارد و تب‌های General، Rubika، Telegram و Logs / Diagnostics دیده می‌شوند.
 3. Rubika test message را اجرا کنید.
 4. Telegram relay test را با relay روشن اجرا کنید.
 5. یک محصول موجود را از منوی «شبکه اجتماعی» به Rubika، Telegram و All enabled networks ارسال کنید.
 6. یک محصول ناموجود را با گزینه block out-of-stock روشن تست کنید و لاگ/وضعیت skipped یا failed را بررسی کنید.
-7. از داخل تب Rubika و Telegram، صف همان شبکه را جداگانه process/clear/requeue کنید و دکمه افزودن محصولات سینک‌نشده به صف pending را تست کنید.
+7. از داخل تب Rubika و Telegram، صف همان شبکه را جداگانه process/pause/resume/clear/requeue کنید و دکمه افزودن محصولات سینک‌نشده به صف pending را تست کنید.
 8. از تب Logs / Diagnostics فیلتر شبکه و پاک‌سازی لاگ را تست کنید.
