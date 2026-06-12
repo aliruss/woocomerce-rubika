@@ -114,6 +114,7 @@ class OptionsPayload(BaseModel):
 class RelayPayload(BaseModel):
     network: str
     request_id: str
+    action: Optional[str] = None
     type: str = "product"
     product: Optional[ProductPayload] = None
     message: Optional[ManualMessagePayload] = None
@@ -127,6 +128,8 @@ class RelayPayload(BaseModel):
 
     @model_validator(mode="after")
     def validate_payload_type(self) -> "RelayPayload":
+        if self.action == "ping":
+            return self
         payload_type = self.type or "product"
         if payload_type == "manual":
             if not self.message or (not self.message.text.strip() and not self.message.images):
@@ -134,6 +137,10 @@ class RelayPayload(BaseModel):
         elif not self.product:
             raise ValueError("product payload requires product")
         return self
+
+
+def validation_error_detail(exc: ValidationError) -> list[dict[str, Any]]:
+    return exc.errors(include_context=False)
 
 
 def require_config() -> None:
@@ -368,9 +375,16 @@ async def send_telegram(
     verify_auth(x_relay_api_key, x_relay_signature, raw_body)
 
     try:
-        payload = RelayPayload.parse_raw(raw_body)
+        payload = RelayPayload.model_validate_json(raw_body)
     except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=exc.errors()) from exc
+        raise HTTPException(status_code=400, detail=validation_error_detail(exc)) from exc
+
+    if payload.action == "ping":
+        log.info(
+            "Relay ping accepted",
+            extra={"request_id": payload.request_id, "product_id": 0, "network": "telegram"},
+        )
+        return make_response(True, payload, "ping", message="pong")
 
     product_id = payload.product.id if payload.product else 0
     context = {"request_id": payload.request_id, "product_id": product_id, "network": "telegram"}
