@@ -149,6 +149,20 @@ curl -X POST https://relay.example.com/send/telegram \
 
 If HMAC is enabled, calculate the signature over the exact raw JSON body and pass it as `X-Relay-Signature`.
 
+## Relay ping request
+
+The WordPress **Test Telegram relay** button posts a lightweight authenticated ping to the same `/send/telegram` endpoint. This validates relay reachability and credentials without requiring a WooCommerce product payload or sending a Telegram message:
+
+```json
+{
+  "network": "telegram",
+  "request_id": "telegram-0-example",
+  "action": "ping"
+}
+```
+
+A successful ping returns `success: true` with `method: "ping"` and `message: "pong"`.
+
 ## Telegram sending behavior
 
 - One valid image: uses `sendPhoto` with product caption.
